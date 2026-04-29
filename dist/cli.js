@@ -1,0 +1,230 @@
+#!/usr/bin/env node
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const client_1 = require("./client");
+const args = process.argv.slice(2);
+const command = args[0];
+function usage() {
+    console.log(`pty-bridge — manage interactive terminal sessions
+
+Usage:
+  pty-bridge start <command> [args...]                Start a PTY session
+  pty-bridge read <id> [--full]                       Read terminal output (incremental by default)
+  pty-bridge write <id> <input>                       Send input (or pipe via stdin)
+  pty-bridge exec <id> <command> [--wait <ms>]        Execute command and return new output
+  pty-bridge sendkey <id> <key>                       Send special key (ctrl-c, enter, tab, up, etc.)
+  pty-bridge wait-for <id> <pattern> [--timeout <s>]  Block until pattern appears in output
+  pty-bridge list                                     List active sessions
+  pty-bridge kill <id>                                Terminate a session
+  pty-bridge resize <id> <cols> <rows>                Resize terminal
+  pty-bridge status                                   Show daemon status
+
+Start options:
+  --keepalive <secs>   Send keepalive to PTY every N seconds
+  --wait <ms>          Initial wait before returning output (default: 500)`);
+    process.exit(command ? 1 : 0);
+}
+async function readStdin() {
+    if (process.stdin.isTTY)
+        return '';
+    const chunks = [];
+    for await (const chunk of process.stdin) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString();
+}
+function parseFlag(argList, flag) {
+    const idx = argList.indexOf(flag);
+    if (idx === -1)
+        return { value: undefined, rest: argList };
+    const value = argList[idx + 1];
+    const rest = argList.filter((_, i) => i !== idx && i !== idx + 1);
+    return { value, rest };
+}
+async function main() {
+    if (!command || command === '--help' || command === '-h')
+        usage();
+    try {
+        switch (command) {
+            case 'start': {
+                const cmd = args[1];
+                if (!cmd) {
+                    console.error('Error: command required');
+                    usage();
+                }
+                let cmdArgs = args.slice(2);
+                const ka = parseFlag(cmdArgs, '--keepalive');
+                cmdArgs = ka.rest;
+                const w = parseFlag(cmdArgs, '--wait');
+                cmdArgs = w.rest;
+                const keepaliveInterval = ka.value ? parseInt(ka.value, 10) : undefined;
+                const wait = w.value ? parseInt(w.value, 10) : undefined;
+                const result = await (0, client_1.request)('start', {
+                    command: cmd,
+                    args: cmdArgs,
+                    cols: parseInt(process.env.COLUMNS || '120', 10),
+                    rows: parseInt(process.env.LINES || '40', 10),
+                    cwd: process.cwd(),
+                    ...(keepaliveInterval ? { keepaliveInterval } : {}),
+                    ...(wait !== undefined && !isNaN(wait) ? { wait } : {}),
+                });
+                console.log(`Session: ${result.sessionId}`);
+                if (result.output)
+                    console.log(result.output);
+                break;
+            }
+            case 'read': {
+                const id = args[1];
+                if (!id) {
+                    console.error('Error: session id required');
+                    usage();
+                }
+                const full = args.includes('--full');
+                const params = { sessionId: id };
+                if (full)
+                    params.since = 0;
+                const result = await (0, client_1.request)('read', params);
+                console.log(result.output);
+                process.stderr.write(`[lines=${result.totalLines} alive=${result.isAlive}${result.exitCode !== undefined ? ` exitCode=${result.exitCode}` : ''}]\n`);
+                break;
+            }
+            case 'write': {
+                const id = args[1];
+                if (!id) {
+                    console.error('Error: session id required');
+                    usage();
+                }
+                const useStdin = args.includes('--stdin');
+                const textArgs = args.slice(2).filter(a => a !== '--stdin');
+                let input;
+                if (useStdin) {
+                    input = await readStdin();
+                }
+                else if (textArgs.length > 0) {
+                    input = textArgs.join(' ');
+                }
+                else {
+                    console.error('Error: input required (as argument or --stdin)');
+                    usage();
+                    return;
+                }
+                if (!input) {
+                    console.error('Error: empty input');
+                    process.exit(1);
+                }
+                await (0, client_1.request)('write', { sessionId: id, input });
+                break;
+            }
+            case 'exec': {
+                const id = args[1];
+                if (!id) {
+                    console.error('Error: session id required');
+                    usage();
+                }
+                let execArgs = args.slice(2);
+                const w = parseFlag(execArgs, '--wait');
+                execArgs = w.rest;
+                const waitMs = w.value ? parseInt(w.value, 10) : 200;
+                if (execArgs.length === 0) {
+                    console.error('Error: command required');
+                    usage();
+                }
+                const cmd = execArgs.join(' ');
+                const result = await (0, client_1.request)('exec', { sessionId: id, command: cmd, waitMs });
+                console.log(result.output);
+                if (!result.isAlive) {
+                    console.log(`\n[Process exited with code ${result.exitCode ?? 'unknown'}]`);
+                }
+                break;
+            }
+            case 'sendkey': {
+                const id = args[1];
+                const key = args[2];
+                if (!id || !key) {
+                    console.error('Error: session id and key required');
+                    usage();
+                }
+                await (0, client_1.request)('sendkey', { sessionId: id, key });
+                break;
+            }
+            case 'wait-for': {
+                const id = args[1];
+                const pattern = args[2];
+                if (!id || !pattern) {
+                    console.error('Error: session id and pattern required');
+                    usage();
+                }
+                let wfArgs = args.slice(3);
+                const t = parseFlag(wfArgs, '--timeout');
+                const timeoutSec = t.value ? parseInt(t.value, 10) : 30;
+                if (isNaN(timeoutSec) || timeoutSec <= 0) {
+                    console.error('Error: invalid timeout value');
+                    process.exit(1);
+                }
+                const timeoutMs = timeoutSec * 1000;
+                const socketTimeout = timeoutMs + 5000;
+                const result = await (0, client_1.request)('waitFor', { sessionId: id, pattern, timeoutMs }, socketTimeout);
+                if (result.output)
+                    console.log(result.output);
+                if (!result.matched) {
+                    console.error(result.error || `Timeout waiting for pattern: ${pattern}`);
+                    process.exit(1);
+                }
+                break;
+            }
+            case 'list': {
+                const result = await (0, client_1.request)('list');
+                if (result.sessions.length === 0) {
+                    console.log('No active sessions');
+                }
+                else {
+                    for (const s of result.sessions) {
+                        const status = s.isAlive ? 'alive' : 'dead';
+                        console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
+                    }
+                }
+                break;
+            }
+            case 'kill': {
+                const id = args[1];
+                if (!id) {
+                    console.error('Error: session id required');
+                    usage();
+                }
+                await (0, client_1.request)('kill', { sessionId: id });
+                console.log(`Session ${id} killed`);
+                break;
+            }
+            case 'resize': {
+                const id = args[1];
+                const cols = parseInt(args[2], 10);
+                const rows = parseInt(args[3], 10);
+                if (!id || isNaN(cols) || isNaN(rows)) {
+                    console.error('Error: session id, cols, and rows required');
+                    usage();
+                }
+                await (0, client_1.request)('resize', { sessionId: id, cols, rows });
+                console.log(`Session ${id} resized to ${cols}x${rows}`);
+                break;
+            }
+            case 'status': {
+                const result = await (0, client_1.request)('status');
+                console.log(`Daemon PID:        ${result.pid}`);
+                console.log(`Started at:        ${result.daemonStartedAt}`);
+                console.log(`Active sessions:   ${result.activeSessions}`);
+                console.log(`Total sessions:    ${result.totalSessions}`);
+                console.log(`Memory usage:      ${result.memoryUsageMB} MB`);
+                break;
+            }
+            default:
+                console.error(`Unknown command: ${command}`);
+                usage();
+        }
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`Error: ${msg}`);
+        process.exit(1);
+    }
+}
+main();

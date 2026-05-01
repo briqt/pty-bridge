@@ -1,0 +1,10 @@
+# Source & config (not needed at runtime)
+src/
+tsconfig.json
+SKILL.md
+.gitignore
+.git/
+
+# Dev artifacts
+node_modules/
+*.js.map

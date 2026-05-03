@@ -30,7 +30,9 @@ Read options:
 
 Exec options:
   --wait-for-idle <ms> Wait for output to stabilize (poll interval) before returning`);
-    process.exit(command ? 1 : 0);
+    // --help/-h is not an error; unknown commands are
+    const isHelp = command === '--help' || command === '-h';
+    process.exit(isHelp || !command ? 0 : 1);
 }
 async function readStdin() {
     if (process.stdin.isTTY)

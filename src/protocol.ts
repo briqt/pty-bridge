@@ -24,6 +24,7 @@ export interface StartParams {
 export interface ReadParams {
   sessionId: string;
   since?: number;
+  buffer?: 'active' | 'normal' | 'alternate';
 }
 
 export interface WriteParams {
@@ -50,12 +51,17 @@ export interface ExecParams {
   sessionId: string;
   command: string;
   waitMs: number;
+  waitForIdle?: number;
 }
 
 export interface WaitForParams {
   sessionId: string;
   pattern: string;
   timeoutMs: number;
+}
+
+export interface SnapshotParams {
+  sessionId: string;
 }
 
 export const SOCKET_PATH = `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;

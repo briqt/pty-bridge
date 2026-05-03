@@ -74,7 +74,9 @@ class Session {
     _exitCode;
     cols;
     rows;
-    lastReadLine = 0;
+    lastReadLineNormal = 0;
+    lastReadLineAlt = 0;
+    lastBufferType = 'normal';
     keepaliveTimer = null;
     constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval) {
         this.id = id;
@@ -131,23 +133,66 @@ class Session {
         this.pty.resize(cols, rows);
         this.terminal.resize(cols, rows);
     }
-    findLastContentLine() {
-        const buf = this.terminal.buffer.active;
-        for (let i = buf.length - 1; i >= 0; i--) {
-            const line = buf.getLine(i);
+    getBuffer(which) {
+        if (!which || which === 'active')
+            return this.terminal.buffer.active;
+        return which === 'normal' ? this.terminal.buffer.normal : this.terminal.buffer.alternate;
+    }
+    findLastContentLine(buf) {
+        const b = buf ?? this.terminal.buffer.active;
+        for (let i = b.length - 1; i >= 0; i--) {
+            const line = b.getLine(i);
             if (line && line.translateToString(true).trim() !== '')
                 return i;
         }
         return -1;
     }
-    // Incremental read: returns lines from `since` to last content line, advances cursor.
-    read(since) {
-        this._lastActivityAt = new Date().toISOString();
+    activeBufferType() {
+        return this.terminal.buffer.active.type;
+    }
+    snapshot() {
         const buf = this.terminal.buffer.active;
-        const fromLine = since ?? this.lastReadLine;
-        const lastContentLine = this.findLastContentLine();
+        const startRow = buf.viewportY;
+        const lines = [];
+        for (let i = 0; i < this.rows; i++) {
+            const line = buf.getLine(startRow + i);
+            lines.push(line ? line.translateToString(true) : '');
+        }
+        return {
+            lines,
+            cursorX: buf.cursorX,
+            cursorY: buf.cursorY,
+            bufferType: buf.type,
+            cols: this.cols,
+            rows: this.rows,
+        };
+    }
+    // Incremental read: returns lines from `since` to last content line, advances cursor.
+    read(since, buffer) {
+        this._lastActivityAt = new Date().toISOString();
+        const buf = this.getBuffer(buffer);
+        const currentType = buf.type;
+        // Dual cursor logic: only applies when reading from active buffer with no explicit `since`
+        if ((!buffer || buffer === 'active') && since === undefined) {
+            if (currentType !== this.lastBufferType) {
+                // Buffer switched — reset target buffer's cursor
+                if (currentType === 'normal')
+                    this.lastReadLineNormal = 0;
+                else
+                    this.lastReadLineAlt = 0;
+                this.lastBufferType = currentType;
+            }
+        }
+        const cursor = currentType === 'normal' ? this.lastReadLineNormal : this.lastReadLineAlt;
+        const fromLine = since ?? cursor;
+        const lastContentLine = this.findLastContentLine(buf);
         if (lastContentLine < fromLine) {
-            this.lastReadLine = lastContentLine + 1;
+            if (since === undefined && (!buffer || buffer === 'active')) {
+                if (currentType === 'normal')
+                    this.lastReadLineNormal = lastContentLine + 1;
+                else
+                    this.lastReadLineAlt = lastContentLine + 1;
+            }
             return '';
         }
         const lines = [];
@@ -155,13 +200,19 @@ class Session {
             const line = buf.getLine(i);
             lines.push(line ? line.translateToString(true) : '');
         }
-        this.lastReadLine = lastContentLine + 1;
+        // Update cursor only for incremental reads (no explicit since, active buffer)
+        if (since === undefined && (!buffer || buffer === 'active')) {
+            if (currentType === 'normal')
+                this.lastReadLineNormal = lastContentLine + 1;
+            else
+                this.lastReadLineAlt = lastContentLine + 1;
+        }
         return lines.join('\n');
     }
     // Read from a specific line without advancing the incremental cursor.
-    readFrom(startLine) {
-        const buf = this.terminal.buffer.active;
-        const lastContentLine = this.findLastContentLine();
+    readFrom(startLine, buffer) {
+        const buf = this.getBuffer(buffer);
+        const lastContentLine = this.findLastContentLine(buf);
         if (lastContentLine < startLine)
             return '';
         const lines = [];
@@ -172,8 +223,8 @@ class Session {
         return lines.join('\n');
     }
     // Full buffer read (no cursor side effects).
-    readFull() {
-        return this.readFrom(0);
+    readFull(buffer) {
+        return this.readFrom(0, buffer);
     }
     lineCount() {
         return this.findLastContentLine() + 1;
@@ -204,6 +255,7 @@ class Session {
             bufferLines: this.bufferLineCount(),
             exitCode: this._exitCode,
             uptime: formatUptime(uptimeMs),
+            bufferType: this.terminal.buffer.active.type,
         };
     }
 }

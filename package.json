@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/briqt/pty-bridge.git"
+    "url": "git+https://github.com/briqt/pty-bridge-cli.git"
   },
   "keywords": [
     "pty",

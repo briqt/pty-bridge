@@ -7,13 +7,33 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 
 You have access to `pty-bridge`, a CLI tool that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool cannot handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects terminal input.
 
-## Installation
+## Before Use — Check Installation
+
+**Always verify pty-bridge is available before attempting to use it.** Start every session by running:
+
+```bash
+pty-bridge status
+```
+
+If this fails with `command not found`, install pty-bridge:
 
 ```bash
 npm i -g github:briqt/pty-bridge
 ```
 
-> Requires Node.js 18+ and C++ build toolchain (`apt install build-essential python3` on Debian/Ubuntu).
+If npm install fails with C++ compilation errors, install the build toolchain first:
+
+```bash
+# Debian/Ubuntu
+apt install build-essential python3
+
+# macOS
+xcode-select --install
+
+# Then retry npm install
+```
+
+Requirements: Node.js 18+, C++ build toolchain (for the node-pty native addon).
 
 ## When to Use
 
@@ -122,6 +142,26 @@ pty-bridge write <id> "yes"
 pty-bridge sendkey <id> enter
 pty-bridge read <id>
 ```
+
+## Output Format Convention
+
+- **stdout**: command output (the actual PTY content)
+- **stderr**: metadata line in `[key=value ...]` format, e.g. `[lines=42 alive=true buffer=normal exitCode=0]`
+- `read` returns output on stdout, session metadata on stderr — parse stderr for session state
+- `exec` returns command output on stdout — check `isAlive` and `exitCode` in the stderr line or JSON response
+- `snapshot` prints a header line `[buffer=... cursor=... size=...]` then the screen content
+- `status` output is human-readable text (parse with regex if needed)
+
+## Error Recovery
+
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `command not found: pty-bridge` | Not installed | Run install command above |
+| `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
+| SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
+| `waitFor` timeout | Pattern never appeared | Check the partial output returned; pattern may have typo or command failed silently |
+| npm install fails | Missing build tools | Install build-essential + python3 (see Installation section) |
+| PTY output is empty/garbled | TUI app in alternate screen | Use `snapshot <id>` instead of `read`; or `read <id> --buffer alternate` |
 
 ## Important Notes
 

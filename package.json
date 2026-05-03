@@ -1,5 +1,5 @@
 {
-  "name": "pty-bridge-cli",
+  "name": "pty-bridge",
   "version": "1.2.0",
   "description": "PTY bridge — manage interactive terminal sessions via CLI",
   "main": "dist/cli.js",
@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/briqt/pty-bridge-cli.git"
+    "url": "git+https://github.com/briqt/pty-bridge.git"
   },
   "keywords": [
     "pty",

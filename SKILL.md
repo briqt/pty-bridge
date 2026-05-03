@@ -10,7 +10,7 @@ You have access to `pty-bridge`, a CLI tool that manages interactive terminal se
 ## Installation
 
 ```bash
-npm i -g github:briqt/pty-bridge-cli
+npm i -g github:briqt/pty-bridge
 ```
 
 > Requires Node.js 18+ and C++ build toolchain (`apt install build-essential python3` on Debian/Ubuntu).

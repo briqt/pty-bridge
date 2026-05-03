@@ -4,15 +4,26 @@ Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a sim
 
 ## Install
 
+Prebuilt binaries (no compiler needed, just Node.js 18+):
+
 ```bash
-npm i -g github:briqt/pty-bridge
+curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/install.sh | bash
 ```
 
-Requires Node.js 18+ and a C++ build toolchain for the native `node-pty` dependency:
+Options:
 
 ```bash
-# Debian/Ubuntu
-apt install build-essential python3
+# Specific version
+curl -fsSL ... | bash -s -- --version 1.2.0
+
+# Custom install directory
+curl -fsSL ... | bash -s -- --prefix /opt/pty-bridge
+```
+
+Alternatively, install via npm (requires Node.js 18+):
+
+```bash
+npm i -g github:briqt/pty-bridge
 ```
 
 ## Quick Start

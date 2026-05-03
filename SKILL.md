@@ -18,22 +18,16 @@ pty-bridge status
 If this fails with `command not found`, install pty-bridge:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/install.sh | bash
+```
+
+If curl install fails (e.g. no GitHub access), use npm instead:
+
+```bash
 npm i -g github:briqt/pty-bridge
 ```
 
-If npm install fails with C++ compilation errors, install the build toolchain first:
-
-```bash
-# Debian/Ubuntu
-apt install build-essential python3
-
-# macOS
-xcode-select --install
-
-# Then retry npm install
-```
-
-Requirements: Node.js 18+, C++ build toolchain (for the node-pty native addon).
+Requirements: Node.js 18+. No C++ compiler needed — prebuilt native binaries are included.
 
 ## When to Use
 

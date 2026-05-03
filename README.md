@@ -5,7 +5,7 @@ Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a sim
 ## Install
 
 ```bash
-npm i -g github:briqt/pty-bridge
+npm i -g github:briqt/pty-bridge-cli
 ```
 
 Requires Node.js 18+ and a C++ build toolchain for the native `node-pty` dependency:

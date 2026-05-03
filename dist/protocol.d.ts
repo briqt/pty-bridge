@@ -21,6 +21,7 @@ export interface StartParams {
 export interface ReadParams {
     sessionId: string;
     since?: number;
+    buffer?: 'active' | 'normal' | 'alternate';
 }
 export interface WriteParams {
     sessionId: string;
@@ -42,11 +43,15 @@ export interface ExecParams {
     sessionId: string;
     command: string;
     waitMs: number;
+    waitForIdle?: number;
 }
 export interface WaitForParams {
     sessionId: string;
     pattern: string;
     timeoutMs: number;
+}
+export interface SnapshotParams {
+    sessionId: string;
 }
 export declare const SOCKET_PATH: string;
 export declare const IDLE_TIMEOUT_MS = 300000;

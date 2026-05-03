@@ -37,11 +37,12 @@ pty-bridge kill <id>
 | Command | Description |
 |---------|-------------|
 | `start <cmd> [args...]` | Start a PTY session |
-| `read <id> [--full]` | Read new output (incremental by default) |
+| `read <id> [--full] [--buffer <type>]` | Read new output (incremental by default) |
 | `write <id> <input>` | Send input text |
-| `exec <id> <cmd> [--wait <ms>]` | Execute command and return output |
+| `exec <id> <cmd> [--wait <ms>] [--wait-for-idle <ms>]` | Execute command and return output |
 | `sendkey <id> <key>` | Send special key (enter, ctrl-c, etc.) |
 | `wait-for <id> <pattern> [--timeout <s>]` | Block until pattern appears |
+| `snapshot <id>` | Capture current visible screen |
 | `list` | List active sessions |
 | `kill <id>` | Terminate a session |
 | `resize <id> <cols> <rows>` | Resize terminal |

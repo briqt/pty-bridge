@@ -9,11 +9,13 @@ function usage() {
 
 Usage:
   pty-bridge start <command> [args...]                Start a PTY session
-  pty-bridge read <id> [--full]                       Read terminal output (incremental by default)
+  pty-bridge read <id> [--full] [--buffer <type>]     Read terminal output (incremental by default)
   pty-bridge write <id> <input>                       Send input (or pipe via stdin)
   pty-bridge exec <id> <command> [--wait <ms>]        Execute command and return new output
+                                [--wait-for-idle <ms>]
   pty-bridge sendkey <id> <key>                       Send special key (ctrl-c, enter, tab, up, etc.)
   pty-bridge wait-for <id> <pattern> [--timeout <s>]  Block until pattern appears in output
+  pty-bridge snapshot <id>                            Capture current visible screen
   pty-bridge list                                     List active sessions
   pty-bridge kill <id>                                Terminate a session
   pty-bridge resize <id> <cols> <rows>                Resize terminal
@@ -21,7 +23,13 @@ Usage:
 
 Start options:
   --keepalive <secs>   Send keepalive to PTY every N seconds
-  --wait <ms>          Initial wait before returning output (default: 500)`);
+  --wait <ms>          Initial wait before returning output (default: 500)
+
+Read options:
+  --buffer <type>      Buffer to read from: active (default), normal, or alternate
+
+Exec options:
+  --wait-for-idle <ms> Wait for output to stabilize (poll interval) before returning`);
     process.exit(command ? 1 : 0);
 }
 async function readStdin() {
@@ -79,13 +87,20 @@ async function main() {
                     console.error('Error: session id required');
                     usage();
                 }
-                const full = args.includes('--full');
+                let readArgs = args.slice(2);
+                const full = readArgs.includes('--full');
+                readArgs = readArgs.filter(a => a !== '--full');
+                const bufFlag = parseFlag(readArgs, '--buffer');
+                readArgs = bufFlag.rest;
+                const buf = bufFlag.value;
                 const params = { sessionId: id };
                 if (full)
                     params.since = 0;
+                if (buf)
+                    params.buffer = buf;
                 const result = await (0, client_1.request)('read', params);
                 console.log(result.output);
-                process.stderr.write(`[lines=${result.totalLines} alive=${result.isAlive}${result.exitCode !== undefined ? ` exitCode=${result.exitCode}` : ''}]\n`);
+                process.stderr.write(`[lines=${result.totalLines} alive=${result.isAlive} buffer=${result.bufferType ?? '?'}${result.exitCode !== undefined ? ` exitCode=${result.exitCode}` : ''}]\n`);
                 break;
             }
             case 'write': {
@@ -124,13 +139,16 @@ async function main() {
                 let execArgs = args.slice(2);
                 const w = parseFlag(execArgs, '--wait');
                 execArgs = w.rest;
-                const waitMs = w.value ? parseInt(w.value, 10) : 200;
+                const idle = parseFlag(execArgs, '--wait-for-idle');
+                execArgs = idle.rest;
+                const waitMs = w.value ? parseInt(w.value, 10) : (idle.value ? 5000 : 200);
+                const waitForIdle = idle.value ? parseInt(idle.value, 10) : undefined;
                 if (execArgs.length === 0) {
                     console.error('Error: command required');
                     usage();
                 }
                 const cmd = execArgs.join(' ');
-                const result = await (0, client_1.request)('exec', { sessionId: id, command: cmd, waitMs });
+                const result = await (0, client_1.request)('exec', { sessionId: id, command: cmd, waitMs, ...(waitForIdle ? { waitForIdle } : {}) });
                 console.log(result.output);
                 if (!result.isAlive) {
                     console.log(`\n[Process exited with code ${result.exitCode ?? 'unknown'}]`);
@@ -172,6 +190,17 @@ async function main() {
                 }
                 break;
             }
+            case 'snapshot': {
+                const id = args[1];
+                if (!id) {
+                    console.error('Error: session id required');
+                    usage();
+                }
+                const result = await (0, client_1.request)('snapshot', { sessionId: id });
+                console.log(`[buffer=${result.bufferType}  cursor=${result.cursorX},${result.cursorY}  size=${result.cols}x${result.rows}]`);
+                console.log(result.lines.join('\n'));
+                break;
+            }
             case 'list': {
                 const result = await (0, client_1.request)('list');
                 if (result.sessions.length === 0) {
@@ -180,7 +209,7 @@ async function main() {
                 else {
                     for (const s of result.sessions) {
                         const status = s.isAlive ? 'alive' : 'dead';
-                        console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
+                        console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  buffer=${s.bufferType}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
                     }
                 }
                 break;

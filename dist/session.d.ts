@@ -11,6 +11,15 @@ export interface SessionInfo {
     bufferLines: number;
     exitCode?: number;
     uptime: string;
+    bufferType: 'normal' | 'alternate';
+}
+export interface SnapshotData {
+    lines: string[];
+    cursorX: number;
+    cursorY: number;
+    bufferType: string;
+    cols: number;
+    rows: number;
 }
 export declare class Session {
     readonly id: string;
@@ -23,7 +32,9 @@ export declare class Session {
     private _exitCode;
     private cols;
     private rows;
-    private lastReadLine;
+    private lastReadLineNormal;
+    private lastReadLineAlt;
+    private lastBufferType;
     private keepaliveTimer;
     constructor(id: string, command: string, args: string[], cols: number, rows: number, cwd: string, env?: Record<string, string>, keepaliveInterval?: number);
     get pid(): number;
@@ -32,10 +43,13 @@ export declare class Session {
     get lastActivityAt(): string;
     write(data: string): void;
     resize(cols: number, rows: number): void;
+    private getBuffer;
     private findLastContentLine;
-    read(since?: number): string;
-    readFrom(startLine: number): string;
-    readFull(): string;
+    activeBufferType(): string;
+    snapshot(): SnapshotData;
+    read(since?: number, buffer?: 'active' | 'normal' | 'alternate'): string;
+    readFrom(startLine: number, buffer?: 'active' | 'normal' | 'alternate'): string;
+    readFull(buffer?: 'active' | 'normal' | 'alternate'): string;
     lineCount(): number;
     bufferLineCount(): number;
     kill(): void;

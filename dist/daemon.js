@@ -118,7 +118,13 @@ async function dispatch(req) {
         case 'read': {
             const p = req.params;
             const session = getSession(p.sessionId);
-            return { output: session.read(p.since), isAlive: session.isAlive, exitCode: session.exitCode, totalLines: session.bufferLineCount() };
+            return {
+                output: session.read(p.since, p.buffer),
+                isAlive: session.isAlive,
+                exitCode: session.exitCode,
+                totalLines: session.bufferLineCount(),
+                bufferType: session.activeBufferType(),
+            };
         }
         case 'write': {
             const p = req.params;
@@ -140,32 +146,63 @@ async function dispatch(req) {
             const session = getSession(p.sessionId);
             const startLine = session.lineCount();
             session.write(p.command + '\r');
-            await new Promise(r => setTimeout(r, p.waitMs || 200));
+            if (p.waitForIdle && p.waitForIdle > 0) {
+                // Smart wait: poll until output stabilizes
+                const maxWait = p.waitMs || 5000;
+                const interval = p.waitForIdle;
+                const deadline = Date.now() + maxWait;
+                let prev = '';
+                await new Promise(resolve => {
+                    const check = () => {
+                        const current = session.readFrom(startLine);
+                        if (current === prev && current.length > 0) {
+                            resolve();
+                            return;
+                        }
+                        prev = current;
+                        if (Date.now() + interval >= deadline) {
+                            resolve();
+                            return;
+                        }
+                        setTimeout(check, interval);
+                    };
+                    setTimeout(check, interval);
+                });
+            }
+            else {
+                await new Promise(r => setTimeout(r, p.waitMs || 200));
+            }
             return { output: session.readFrom(startLine), isAlive: session.isAlive, exitCode: session.exitCode };
         }
         case 'waitFor': {
             const p = req.params;
             const session = getSession(p.sessionId);
-            const initialOutput = session.readFull();
-            const initialLen = initialOutput.length;
-            if (initialOutput.includes(p.pattern)) {
+            // Check existing content first
+            const startLine = session.lineCount();
+            const existing = session.readFull();
+            if (existing.includes(p.pattern)) {
                 return { matched: true, output: '' };
             }
+            // Incremental matching: only scan new lines every 200ms
             return new Promise((resolve) => {
                 const startTime = Date.now();
                 const timer = setInterval(() => {
-                    const current = session.readFull();
-                    const incremental = current.substring(initialLen);
-                    if (incremental.includes(p.pattern)) {
+                    const newContent = session.readFrom(startLine);
+                    if (newContent.includes(p.pattern)) {
                         clearInterval(timer);
-                        resolve({ matched: true, output: incremental });
+                        resolve({ matched: true, output: newContent });
                     }
                     else if (Date.now() - startTime >= p.timeoutMs) {
                         clearInterval(timer);
-                        resolve({ matched: false, output: incremental, error: `Timeout after ${p.timeoutMs}ms waiting for pattern: ${p.pattern}` });
+                        resolve({ matched: false, output: newContent, error: `Timeout after ${p.timeoutMs}ms waiting for pattern: ${p.pattern}` });
                     }
-                }, 500);
+                }, 200);
             });
+        }
+        case 'snapshot': {
+            const p = req.params;
+            const session = getSession(p.sessionId);
+            return { success: true, ...session.snapshot() };
         }
         case 'list': {
             return { sessions: Array.from(sessions.values()).map(s => s.info()) };

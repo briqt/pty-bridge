@@ -1,7 +1,7 @@
 # Source & config (not needed at runtime)
 src/
 tsconfig.json
-SKILL.md
+skill/
 .gitignore
 .git/
 

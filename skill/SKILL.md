@@ -18,7 +18,7 @@ pty-bridge status
 If this fails with `command not found`, install pty-bridge:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/skill/install.sh | bash
 ```
 
 If curl install fails (e.g. no GitHub access), use npm instead:

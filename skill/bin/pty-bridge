@@ -1,0 +1,12 @@
+#!/bin/sh
+# Resolve symlinks so that bin works whether it's invoked directly or via a symlink in PATH.
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  TARGET="$(readlink "$SCRIPT")"
+  case "$TARGET" in
+    /*) SCRIPT="$TARGET" ;;
+    *)  SCRIPT="$(dirname "$SCRIPT")/$TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+exec node "$SCRIPT_DIR/../dist/cli.js" "$@"

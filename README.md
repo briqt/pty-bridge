@@ -2,29 +2,31 @@
 
 Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a simple CLI. Designed for AI agents that need PTY support.
 
-## Install
+Distributed as a self-contained agent skill — no compile step, no platform-specific tarballs, no npm publish. The `skill/` folder ships pre-built JS and pre-bundled native binaries for linux-x64/arm64 and darwin-x64/arm64.
 
-Prebuilt binaries (no compiler needed, just Node.js 18+):
+## Install (end users)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/install.sh | bash
-```
-
-Options:
+Use the [skills](https://skills.sh/) CLI:
 
 ```bash
-# Specific version
-curl -fsSL ... | bash -s -- --version 1.2.0
-
-# Custom install directory
-curl -fsSL ... | bash -s -- --prefix /opt/pty-bridge
+npx skills add briqt/pty-bridge -g
 ```
 
-Alternatively, install via npm (requires Node.js 18+):
+This shallow-clones the repo and copies `skill/` into `~/.agents/skills/pty-bridge/`. The skill is then visible to Claude Code, Kiro CLI, and other compatible agents.
+
+To upgrade:
 
 ```bash
-npm i -g github:briqt/pty-bridge
+npx skills update pty-bridge
 ```
+
+To remove:
+
+```bash
+npx skills remove pty-bridge
+```
+
+Requirements: Node.js 18+. Linux or macOS (Windows users: run inside WSL).
 
 ## Quick Start
 
@@ -43,21 +45,7 @@ pty-bridge exec <id> "print('hello')"
 pty-bridge kill <id>
 ```
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `start <cmd> [args...]` | Start a PTY session |
-| `read <id> [--full] [--buffer <type>]` | Read new output (incremental by default) |
-| `write <id> <input>` | Send input text |
-| `exec <id> <cmd> [--wait <ms>] [--wait-for-idle <ms>]` | Execute command and return output |
-| `sendkey <id> <key>` | Send special key (enter, ctrl-c, etc.) |
-| `wait-for <id> <pattern> [--timeout <s>]` | Block until pattern appears |
-| `snapshot <id>` | Capture current visible screen |
-| `list` | List active sessions |
-| `kill <id>` | Terminate a session |
-| `resize <id> <cols> <rows>` | Resize terminal |
-| `status` | Show daemon status |
+See [`skill/SKILL.md`](skill/SKILL.md) for the full command reference.
 
 ## Architecture
 
@@ -66,6 +54,19 @@ pty-bridge kill <id>
 - **Sessions**: Each session runs in its own PTY with xterm.js headless terminal for clean output
 
 The daemon auto-exits after 5 minutes with no active sessions.
+
+## Development
+
+```bash
+git clone https://github.com/briqt/pty-bridge.git
+cd pty-bridge
+npm install                # dev deps (typescript)
+npm run prepare-skill      # tsc → skill/dist/, vendor skill/node_modules/ for all 4 platforms
+```
+
+Edit `src/*.ts`, run `npm run prepare-skill`, commit `skill/dist/` and (if deps changed) `skill/node_modules/`. Push to `main` — `npx skills update` then picks up the new revision.
+
+There is no version tag, no GitHub Release, no `npm publish`. The repo's HEAD is the published artifact.
 
 ## License
 

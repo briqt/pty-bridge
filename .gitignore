@@ -1,2 +1,7 @@
 node_modules/
 *.js.map
+dist/
+
+# The skill/ folder is shipped as-is to users; vendor the build artifacts.
+!skill/dist/
+!skill/node_modules/

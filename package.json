@@ -1,34 +1,18 @@
 {
   "name": "pty-bridge",
-  "version": "1.2.1",
+  "version": "1.3.0",
+  "private": true,
   "description": "PTY bridge — manage interactive terminal sessions via CLI",
-  "main": "dist/cli.js",
-  "bin": {
-    "pty-bridge": "dist/cli.js"
-  },
-  "files": [
-    "dist/"
-  ],
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build"
+    "vendor": "rm -rf skill/node_modules skill/package-lock.json && cd skill && npm install --force --no-package-lock",
+    "prepare-skill": "npm run build && npm run vendor"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/briqt/pty-bridge.git"
   },
-  "keywords": [
-    "pty",
-    "terminal",
-    "ssh",
-    "repl",
-    "interactive"
-  ],
   "license": "MIT",
-  "dependencies": {
-    "@lydell/node-pty": "^1.0.0",
-    "@xterm/headless": "^5.5.0"
-  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.5.0"

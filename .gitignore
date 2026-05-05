@@ -2,6 +2,9 @@ node_modules/
 *.js.map
 dist/
 
-# The skill/ folder is shipped as-is to users; vendor the build artifacts.
+# The skill/ folder ships as-is to users — track build artifacts and vendored deps
+# (including any nested node_modules npm may create for hoisted/optional deps).
 !skill/dist/
+!skill/dist/**
 !skill/node_modules/
+!skill/node_modules/**

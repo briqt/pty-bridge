@@ -4,7 +4,7 @@
   "private": true,
   "description": "Vendored runtime for the pty-bridge skill — bundles deps for linux/macOS x64+arm64",
   "dependencies": {
-    "@lydell/node-pty": "^1.0.0",
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@lydell/node-pty-darwin-arm64": "1.2.0-beta.12",
     "@lydell/node-pty-darwin-x64": "1.2.0-beta.12",
     "@lydell/node-pty-linux-arm64": "1.2.0-beta.12",

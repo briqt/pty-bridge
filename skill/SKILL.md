@@ -7,27 +7,21 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 
 You have access to `pty-bridge`, a CLI tool that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool cannot handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects terminal input.
 
-## Before Use — Check Installation
+## Setup — One-Time PATH Wiring
 
-**Always verify pty-bridge is available before attempting to use it.** Start every session by running:
+This skill is self-contained. The `pty-bridge` binary lives at `<skill-dir>/bin/pty-bridge` next to this file (where `<skill-dir>` is the directory containing SKILL.md, typically `~/.agents/skills/pty-bridge/` or `~/.claude/skills/pty-bridge/`). Native binaries for linux-x64/arm64 and darwin-x64/arm64 are pre-bundled — only Node.js 18+ is required.
 
-```bash
-pty-bridge status
-```
-
-If this fails with `command not found`, install pty-bridge:
+**Before first use**, run `pty-bridge status`. If that fails with `command not found`, symlink it into PATH:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/briqt/pty-bridge/main/skill/install.sh | bash
+mkdir -p ~/.local/bin
+ln -sf <skill-dir>/bin/pty-bridge ~/.local/bin/pty-bridge
+# If ~/.local/bin is not on PATH, add: export PATH="$HOME/.local/bin:$PATH"
 ```
 
-If curl install fails (e.g. no GitHub access), use npm instead:
+Or invoke it directly via its absolute path: `<skill-dir>/bin/pty-bridge status`.
 
-```bash
-npm i -g github:briqt/pty-bridge
-```
-
-Requirements: Node.js 18+. No C++ compiler needed — prebuilt native binaries are included.
+Windows users: run inside WSL (native Windows is not supported).
 
 ## When to Use
 
@@ -150,11 +144,11 @@ pty-bridge read <id>
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `command not found: pty-bridge` | Not installed | Run install command above |
+| `command not found: pty-bridge` | PATH not wired | Symlink `<skill-dir>/bin/pty-bridge` into `~/.local/bin/`, or invoke via absolute path |
 | `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
 | SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
 | `waitFor` timeout | Pattern never appeared | Check the partial output returned; pattern may have typo or command failed silently |
-| npm install fails | Missing build tools | Install build-essential + python3 (see Installation section) |
+| `Cannot find module @lydell/node-pty-…` | Unsupported platform | Skill bundles linux/darwin × x64/arm64 only. Other platforms are unsupported. |
 | PTY output is empty/garbled | TUI app in alternate screen | Use `snapshot <id>` instead of `read`; or `read <id> --buffer alternate` |
 
 ## Important Notes

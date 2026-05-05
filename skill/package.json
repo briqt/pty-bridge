@@ -1,0 +1,14 @@
+{
+  "name": "pty-bridge-skill",
+  "version": "1.3.0",
+  "private": true,
+  "description": "Vendored runtime for the pty-bridge skill — bundles deps for linux/macOS x64+arm64",
+  "dependencies": {
+    "@lydell/node-pty": "^1.0.0",
+    "@lydell/node-pty-darwin-arm64": "1.2.0-beta.12",
+    "@lydell/node-pty-darwin-x64": "1.2.0-beta.12",
+    "@lydell/node-pty-linux-arm64": "1.2.0-beta.12",
+    "@lydell/node-pty-linux-x64": "1.2.0-beta.12",
+    "@xterm/headless": "^5.5.0"
+  }
+}

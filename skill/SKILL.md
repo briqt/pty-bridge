@@ -163,3 +163,5 @@ pty-bridge read <id>
 8. Use `ctrl-c` via sendkey to interrupt stuck commands.
 9. Terminal defaults to 120x40. Use `resize` for TUI apps that need specific dimensions.
 10. Client socket timeout is configurable via `PTY_BRIDGE_TIMEOUT` environment variable (ms, default: 30000).
+
+<!-- last-verified: 2026-05-05 -->

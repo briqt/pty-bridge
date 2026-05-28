@@ -1,12 +1,39 @@
 {
   "name": "pty-bridge",
   "version": "1.3.0",
-  "private": true,
-  "description": "PTY bridge — manage interactive terminal sessions via CLI",
+  "description": "Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via CLI. Designed for AI agents that need PTY support.",
+  "keywords": [
+    "pty",
+    "terminal",
+    "ssh",
+    "repl",
+    "tui",
+    "cli",
+    "agent",
+    "ai",
+    "node-pty",
+    "interactive"
+  ],
+  "bin": {
+    "pty-bridge": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "scripts": {
     "build": "tsc",
-    "vendor": "rm -rf skill/node_modules skill/package-lock.json && cd skill && npm install --force --no-package-lock",
-    "prepare-skill": "npm run build && npm run vendor"
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
+    "@xterm/headless": "^5.5.0"
   },
   "repository": {
     "type": "git",

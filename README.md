@@ -2,31 +2,31 @@
 
 Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a simple CLI. Designed for AI agents that need PTY support.
 
-Distributed as a self-contained agent skill — no compile step, no platform-specific tarballs, no npm publish. The `skill/` folder ships pre-built JS and pre-bundled native binaries for linux-x64/arm64 and darwin-x64/arm64.
+Published as an npm package. The matching prebuilt native binary (via `@lydell/node-pty`) is selected automatically per platform — no compile step, no manual platform handling.
 
-## Install (end users)
+## Install
 
-Use the [skills](https://skills.sh/) CLI:
+Run it directly with no install:
+
+```bash
+npx -y pty-bridge status
+```
+
+Or install globally so the bare `pty-bridge` command is on PATH:
+
+```bash
+npm i -g pty-bridge
+```
+
+Requirements: Node.js 18+. Linux or macOS (Windows users: run inside WSL).
+
+## Use as an agent skill
+
+The [`skill/SKILL.md`](skill/SKILL.md) file is a thin agent skill that documents the CLI for Claude Code, Kiro CLI, and other compatible agents. It rides on the published npm package (it invokes `npx -y pty-bridge` / the global binary) rather than vendoring any runtime.
 
 ```bash
 npx skills add briqt/pty-bridge -g
 ```
-
-This shallow-clones the repo and copies `skill/` into `~/.agents/skills/pty-bridge/`. The skill is then visible to Claude Code, Kiro CLI, and other compatible agents.
-
-To upgrade:
-
-```bash
-npx skills update pty-bridge
-```
-
-To remove:
-
-```bash
-npx skills remove pty-bridge
-```
-
-Requirements: Node.js 18+. Linux or macOS (Windows users: run inside WSL).
 
 ## Quick Start
 
@@ -60,13 +60,19 @@ The daemon auto-exits after 5 minutes with no active sessions.
 ```bash
 git clone https://github.com/briqt/pty-bridge.git
 cd pty-bridge
-npm install                # dev deps (typescript)
-npm run prepare-skill      # tsc → skill/dist/, vendor skill/node_modules/ for all 4 platforms
+npm install      # installs deps + dev deps
+npm run build    # tsc → dist/
 ```
 
-Edit `src/*.ts`, run `npm run prepare-skill`, commit `skill/dist/` and (if deps changed) `skill/node_modules/`. Push to `main` — `npx skills update` then picks up the new revision.
+Edit `src/*.ts`, run `npm run build`, and test locally (e.g. `node dist/cli.js status`).
 
-There is no version tag, no GitHub Release, no `npm publish`. The repo's HEAD is the published artifact.
+### Publishing
+
+```bash
+npm publish      # prepublishOnly runs the build; files: ["dist"] ships only compiled JS
+```
+
+The native binaries are not vendored — npm resolves the correct `@lydell/node-pty-<platform>` package at install time via optional dependencies.
 
 ## License
 

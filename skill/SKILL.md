@@ -1,27 +1,26 @@
 ---
 name: pty-bridge
-description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via pty-bridge CLI. Use when the standard Bash tool cannot handle interactive programs that require a PTY.
+description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via the pty-bridge CLI. Use whenever the standard Bash tool can't handle a program that needs a real PTY — SSH logins, interactive REPLs (python, psql, mysql, node), commands that prompt for a password or confirmation, or TUI apps (vim, htop, less). Reach for this skill any time a command hangs, ignores piped input, or misbehaves under plain Bash.
 ---
 
 # pty-bridge
 
-You have access to `pty-bridge`, a CLI tool that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool cannot handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects terminal input.
+`pty-bridge` is a CLI that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool can't handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects a real terminal.
 
-## Setup — One-Time PATH Wiring
+## Setup
 
-This skill is self-contained. The `pty-bridge` binary lives at `<skill-dir>/bin/pty-bridge` next to this file (where `<skill-dir>` is the directory containing SKILL.md, typically `~/.agents/skills/pty-bridge/` or `~/.claude/skills/pty-bridge/`). Native binaries for linux-x64/arm64 and darwin-x64/arm64 are pre-bundled — only Node.js 18+ is required.
+pty-bridge is published on npm, so there's nothing to vendor or build — run it straight from the registry:
 
-**Before first use**, run `pty-bridge status`. If that fails with `command not found`, symlink it into PATH:
+- **First use / one-off:** `npx -y pty-bridge status`. The first call downloads the package and the prebuilt native binary for the current platform into the npm cache; later calls are fast.
+- **Recommended for repeated use:** install once so the bare `pty-bridge` command is on PATH:
+  ```bash
+  npm i -g pty-bridge
+  pty-bridge status
+  ```
 
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/bin/pty-bridge ~/.local/bin/pty-bridge
-# If ~/.local/bin is not on PATH, add: export PATH="$HOME/.local/bin:$PATH"
-```
+The examples below use the bare `pty-bridge`. If you didn't install globally, prefix each call with `npx -y ` (e.g. `npx -y pty-bridge start ssh user@host`).
 
-Or invoke it directly via its absolute path: `<skill-dir>/bin/pty-bridge status`.
-
-Windows users: run inside WSL (native Windows is not supported).
+Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL). The matching native binary is selected automatically per platform — no manual platform handling needed.
 
 ## When to Use
 
@@ -144,11 +143,12 @@ pty-bridge read <id>
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `command not found: pty-bridge` | PATH not wired | Symlink `<skill-dir>/bin/pty-bridge` into `~/.local/bin/`, or invoke via absolute path |
+| `command not found: pty-bridge` | Not installed globally | Run via `npx -y pty-bridge ...`, or install once with `npm i -g pty-bridge` |
+| `npm error` / network timeout on first run | No registry access | The first `npx`/install needs network to fetch the package + native binary. Pre-install pty-bridge where the agent runs, or restore network access |
 | `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
 | SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
-| `waitFor` timeout | Pattern never appeared | Check the partial output returned; pattern may have typo or command failed silently |
-| `Cannot find module @lydell/node-pty-…` | Unsupported platform | Skill bundles linux/darwin × x64/arm64 only. Other platforms are unsupported. |
+| `wait-for` timeout | Pattern never appeared | Check the partial output returned; pattern may have a typo or the command failed silently |
+| `Cannot find module @lydell/node-pty-…` | No prebuilt binary for this platform | Only linux/darwin × x64/arm64 are supported. On Windows, use WSL |
 | PTY output is empty/garbled | TUI app in alternate screen | Use `snapshot <id>` instead of `read`; or `read <id> --buffer alternate` |
 
 ## Important Notes

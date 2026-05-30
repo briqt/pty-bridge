@@ -3,6 +3,24 @@
 import { request } from './client';
 
 const args = process.argv.slice(2);
+
+// Extract global --timeout flag before command parsing
+let globalTimeout: number | undefined;
+const timeoutIdx = args.indexOf('--timeout');
+if (timeoutIdx !== -1 && args[0] !== 'wait-for') {
+  // Only treat as global if it appears before the command or is the first flag
+  // (wait-for has its own --timeout which means seconds, not ms)
+  const beforeCommand = timeoutIdx === 0;
+  if (beforeCommand) {
+    globalTimeout = parseInt(args[timeoutIdx + 1], 10);
+    if (isNaN(globalTimeout) || globalTimeout <= 0) {
+      console.error('Error: --timeout must be a positive integer (milliseconds)');
+      process.exit(1);
+    }
+    args.splice(timeoutIdx, 2);
+  }
+}
+
 const command = args[0];
 
 function usage(): void {
@@ -66,17 +84,23 @@ async function main(): Promise<void> {
         cmdArgs = ka.rest;
         const w = parseFlag(cmdArgs, '--wait');
         cmdArgs = w.rest;
+        const colsFlag = parseFlag(cmdArgs, '--cols');
+        cmdArgs = colsFlag.rest;
+        const rowsFlag = parseFlag(cmdArgs, '--rows');
+        cmdArgs = rowsFlag.rest;
         const keepaliveInterval = ka.value ? parseInt(ka.value, 10) : undefined;
         const wait = w.value ? parseInt(w.value, 10) : undefined;
+        const cols = colsFlag.value ? parseInt(colsFlag.value, 10) : 120;
+        const rows = rowsFlag.value ? parseInt(rowsFlag.value, 10) : 40;
         const result = await request('start', {
           command: cmd,
           args: cmdArgs,
-          cols: parseInt(process.env.COLUMNS || '120', 10),
-          rows: parseInt(process.env.LINES || '40', 10),
+          cols,
+          rows,
           cwd: process.cwd(),
           ...(keepaliveInterval ? { keepaliveInterval } : {}),
           ...(wait !== undefined && !isNaN(wait) ? { wait } : {}),
-        }) as { sessionId: string; output: string };
+        }, globalTimeout) as { sessionId: string; output: string };
         console.log(`Session: ${result.sessionId}`);
         if (result.output) console.log(result.output);
         break;

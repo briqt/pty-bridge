@@ -1,4 +1,10 @@
+# Ignore all dotfiles/dotdirs
+.*
+
+# Whitelist
+!.gitignore
+
+# Build artifacts
 node_modules/
-*.js.map
 dist/
 *.tgz

@@ -9,18 +9,13 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 
 ## Setup
 
-pty-bridge is published on npm, so there's nothing to vendor or build — run it straight from the registry:
+If `pty-bridge` is not available, install it from GitHub:
 
-- **First use / one-off:** `npx -y pty-bridge status`. The first call downloads the package and the prebuilt native binary for the current platform into the npm cache; later calls are fast.
-- **Recommended for repeated use:** install once so the bare `pty-bridge` command is on PATH:
-  ```bash
-  npm i -g pty-bridge
-  pty-bridge status
-  ```
+```bash
+npm i -g github:briqt/pty-bridge
+```
 
-The examples below use the bare `pty-bridge`. If you didn't install globally, prefix each call with `npx -y ` (e.g. `npx -y pty-bridge start ssh user@host`).
-
-Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL). The matching native binary is selected automatically per platform — no manual platform handling needed.
+Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL).
 
 ## When to Use
 
@@ -33,6 +28,8 @@ Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL). The matchin
 ## Commands
 
 ```bash
+pty-bridge [--timeout <ms>] <command> [options]
+
 pty-bridge start <command> [args...]                # Start a PTY session
 pty-bridge read <id> [--full] [--buffer <type>]     # Read new output (incremental by default, --full for all)
 pty-bridge write <id> <input>                       # Send input (or pipe via stdin)
@@ -47,11 +44,18 @@ pty-bridge resize <id> <cols> <rows>                # Resize terminal
 pty-bridge status                                   # Show daemon status (PID, memory, sessions)
 ```
 
+### Global Options
+
+```bash
+pty-bridge --timeout 60000 exec <id> "slow-command"   # Override client socket timeout (default: 30000ms)
+```
+
 ### Start Options
 
 ```bash
 pty-bridge start ssh user@host --keepalive 30    # Send keepalive every 30s (prevents SSH timeout)
 pty-bridge start cmd --wait 1000                 # Wait 1000ms before returning initial output (default: 500ms)
+pty-bridge start cmd --cols 200 --rows 50        # Custom terminal dimensions (default: 120x40)
 ```
 
 ### Read Options
@@ -143,8 +147,7 @@ pty-bridge read <id>
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `command not found: pty-bridge` | Not installed globally | Run via `npx -y pty-bridge ...`, or install once with `npm i -g pty-bridge` |
-| `npm error` / network timeout on first run | No registry access | The first `npx`/install needs network to fetch the package + native binary. Pre-install pty-bridge where the agent runs, or restore network access |
+| `command not found: pty-bridge` | Not installed | `npm i -g github:briqt/pty-bridge` |
 | `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
 | SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
 | `wait-for` timeout | Pattern never appeared | Check the partial output returned; pattern may have a typo or the command failed silently |
@@ -155,11 +158,12 @@ pty-bridge read <id>
 
 1. **Prefer `exec` over `write` + `sendkey enter`** — `exec` combines write, enter, wait, and read into one call, returning only the new output.
 2. **`read` is incremental by default** — it returns only output since the last read. Use `read <id> --full` to get the entire buffer.
-3. **Use `wait-for` for long operations** — instead of `sleep N && read`, use `wait-for <id> "pattern" --timeout N` to block until specific output appears.
-4. `write` sends text as-is — use `sendkey enter` afterward to submit (or just use `exec`).
-5. For secrets, pipe via stdin: `echo -n "password" | pty-bridge write <id> --stdin`
-6. Always `kill` sessions when done to free resources.
-7. The daemon auto-exits after 5 minutes when no alive sessions remain.
-8. Use `ctrl-c` via sendkey to interrupt stuck commands.
-9. Terminal defaults to 120x40. Use `resize` for TUI apps that need specific dimensions.
-10. Client socket timeout is configurable via `PTY_BRIDGE_TIMEOUT` environment variable (ms, default: 30000).
+3. **`exec` does NOT advance the `read` cursor** — if you call `exec` then `read`, the `read` will include the same output that `exec` already returned. This is by design: `exec` is a self-contained operation that doesn't interfere with incremental `read` state.
+4. **Use `wait-for` for long operations** — instead of `sleep N && read`, use `wait-for <id> "pattern" --timeout N` to block until specific output appears.
+5. `write` sends text as-is — use `sendkey enter` afterward to submit (or just use `exec`).
+6. For secrets, pipe via stdin: `echo -n "password" | pty-bridge write <id> --stdin`
+7. Always `kill` sessions when done to free resources.
+8. The daemon auto-exits after 5 minutes when no alive sessions remain.
+9. Use `ctrl-c` via sendkey to interrupt stuck commands.
+10. Terminal defaults to 120x40. Use `--cols`/`--rows` on `start` or `resize` for TUI apps that need specific dimensions.
+11. Use `--timeout <ms>` (global flag, before the command) to override the default 30s client socket timeout for slow operations.

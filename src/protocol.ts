@@ -1,3 +1,13 @@
+import { platform } from 'os';
+
+function getSocketPath(): string {
+  if (platform() === 'win32') {
+    const username = process.env.USERNAME || process.env.USER || 'default';
+    return `\\\\.\\pipe\\pty-bridge-${username}`;
+  }
+  return `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
+}
+
 export interface Request {
   id: string;
   method: string;
@@ -64,7 +74,7 @@ export interface SnapshotParams {
   sessionId: string;
 }
 
-export const SOCKET_PATH = `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
+export const SOCKET_PATH = getSocketPath();
 export const IDLE_TIMEOUT_MS = 300_000;
 
 export const KEY_MAP: Record<string, string> = {

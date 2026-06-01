@@ -1,7 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KEY_MAP = exports.IDLE_TIMEOUT_MS = exports.SOCKET_PATH = void 0;
-exports.SOCKET_PATH = `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
+const os_1 = require("os");
+function getSocketPath() {
+    if ((0, os_1.platform)() === 'win32') {
+        const username = process.env.USERNAME || process.env.USER || 'default';
+        return `\\\\.\\pipe\\pty-bridge-${username}`;
+    }
+    return `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
+}
+exports.SOCKET_PATH = getSocketPath();
 exports.IDLE_TIMEOUT_MS = 300_000;
 exports.KEY_MAP = {
     'enter': '\r',

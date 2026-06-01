@@ -15,7 +15,7 @@ If `pty-bridge` is not available, install it from GitHub:
 npm i -g github:briqt/pty-bridge --install-links
 ```
 
-Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL).
+Requirements: Node.js 18+. Supported on macOS, Linux, and Windows.
 
 ## When to Use
 
@@ -151,7 +151,7 @@ pty-bridge read <id>
 | `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
 | SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
 | `wait-for` timeout | Pattern never appeared | Check the partial output returned; pattern may have a typo or the command failed silently |
-| `Cannot find module @lydell/node-pty-…` | No prebuilt binary for this platform | Only linux/darwin × x64/arm64 are supported. On Windows, use WSL |
+| `Cannot find module @lydell/node-pty-…` | No prebuilt binary for this platform | Supported: linux/darwin/win32 × x64/arm64. Reinstall with `--install-links` |
 | PTY output is empty/garbled | TUI app in alternate screen | Use `snapshot <id>` instead of `read`; or `read <id> --buffer alternate` |
 
 ## Important Notes

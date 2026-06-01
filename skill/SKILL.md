@@ -12,7 +12,7 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 If `pty-bridge` is not available, install it from GitHub:
 
 ```bash
-npm i -g github:briqt/pty-bridge
+npm i -g github:briqt/pty-bridge --install-links
 ```
 
 Requirements: Node.js 18+, macOS or Linux (Windows: run inside WSL).
@@ -147,7 +147,7 @@ pty-bridge read <id>
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `command not found: pty-bridge` | Not installed | `npm i -g github:briqt/pty-bridge` |
+| `command not found: pty-bridge` | Not installed | `npm i -g github:briqt/pty-bridge --install-links` |
 | `connect ENOENT` or socket timeout | Daemon died or not started | `pty-bridge status`; daemon auto-starts on next `start` |
 | SSH password prompt | Interactive auth required | Use `pty-bridge write <id> "password" --stdin` then `sendkey enter` |
 | `wait-for` timeout | Pattern never appeared | Check the partial output returned; pattern may have a typo or the command failed silently |

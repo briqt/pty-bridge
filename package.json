@@ -33,15 +33,13 @@
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.12",
-    "@xterm/headless": "^5.5.0"
+    "@types/node": "^20.0.0",
+    "@xterm/headless": "^5.5.0",
+    "typescript": "^5.5.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/briqt/pty-bridge.git"
   },
-  "license": "MIT",
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.5.0"
-  }
+  "license": "MIT"
 }

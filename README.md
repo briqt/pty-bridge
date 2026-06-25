@@ -1,8 +1,12 @@
 # pty-bridge
 
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)]()
+
 Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a simple CLI. Designed for AI agents that need PTY support.
 
 Published as an npm package. The matching prebuilt native binary (via `@lydell/node-pty`) is selected automatically per platform — no compile step, no manual platform handling.
+
+**[中文文档](README_CN.md)**
 
 ## Install
 
@@ -77,3 +81,7 @@ The native binaries are not vendored — npm resolves the correct `@lydell/node-
 ## License
 
 MIT
+
+## Community
+
+Shared on [LINUX DO](https://linux.do/)

@@ -35,13 +35,15 @@ npx skills add briqt/pty-bridge -g
 ## Quick Start
 
 ```bash
+export PTY_BRIDGE_OWNER="my-agent"
+
 # Start an SSH session
-pty-bridge start ssh user@host --keepalive 30
+pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER"
 
-# Run a command and get output
-pty-bridge exec <id> "ls -la"
+# Run a shell command and wait until it exits
+pty-bridge exec <id> "ls -la" --wait-exit
 
-# Start a Python REPL
+# Start a Python REPL (no --wait-exit)
 pty-bridge start python3
 pty-bridge exec <id> "print('hello')"
 
@@ -49,13 +51,15 @@ pty-bridge exec <id> "print('hello')"
 pty-bridge kill <id>
 ```
 
-See [`skill/SKILL.md`](skill/SKILL.md) for the full command reference.
+See [`skill/SKILL.md`](skill/SKILL.md) for the full command reference (owners, `--raw`, truncated reads, lost-session tombstones).
 
 ## Architecture
 
 - **Daemon**: Auto-spawns on first `start`, manages PTY sessions via Unix socket
 - **Client**: Thin CLI that sends commands to the daemon
 - **Sessions**: Each session runs in its own PTY with xterm.js headless terminal for clean output
+- **Owners**: Sessions are tagged; writes to another owner's session require `--force`
+- **Tombstones**: If the daemon crashes, `list` / `status` report which sessions were lost
 
 The daemon auto-exits after 5 minutes with no active sessions.
 
@@ -65,7 +69,7 @@ The daemon auto-exits after 5 minutes with no active sessions.
 git clone https://github.com/briqt/pty-bridge.git
 cd pty-bridge
 npm install      # installs deps + dev deps
-npm run build    # tsc → dist/
+npm test         # tsc → dist/, then integration tests
 ```
 
 Edit `src/*.ts`, run `npm run build`, and test locally (e.g. `node dist/cli.js status`).
@@ -73,7 +77,7 @@ Edit `src/*.ts`, run `npm run build`, and test locally (e.g. `node dist/cli.js s
 ### Publishing
 
 ```bash
-npm publish      # prepublishOnly runs the build; files: ["dist"] ships only compiled JS
+npm publish      # prepublishOnly runs tests (and the build); files: ["dist"] ships only compiled JS
 ```
 
 The native binaries are not vendored — npm resolves the correct `@lydell/node-pty-<platform>` package at install time via optional dependencies.

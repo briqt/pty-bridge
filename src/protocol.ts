@@ -1,12 +1,37 @@
-import { platform } from 'os';
+import { platform, tmpdir } from 'os';
+import { join } from 'path';
 
-function getSocketPath(): string {
+export function getSocketPath(): string {
+  if (process.env.PTY_BRIDGE_SOCKET) return process.env.PTY_BRIDGE_SOCKET;
   if (platform() === 'win32') {
     const username = process.env.USERNAME || process.env.USER || 'default';
     return `\\\\.\\pipe\\pty-bridge-${username}`;
   }
   return `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
 }
+
+export function getStatePath(): string {
+  if (process.env.PTY_BRIDGE_STATE) return process.env.PTY_BRIDGE_STATE;
+  const socket = getSocketPath();
+  if (platform() === 'win32') {
+    const username = process.env.USERNAME || process.env.USER || 'default';
+    return join(tmpdir(), `pty-bridge-${username}.state.json`);
+  }
+  return `${socket}.state.json`;
+}
+
+export function defaultOwner(): string {
+  return process.env.PTY_BRIDGE_OWNER || process.env.USER || process.env.USERNAME || 'default';
+}
+
+export const SOCKET_PATH = getSocketPath();
+export const IDLE_TIMEOUT_MS = 300_000;
+export const DEFAULT_MAX_BYTES = 256_000;
+export const RAW_BUFFER_CAP = 8 * 1024 * 1024;
+export const WAIT_FOR_LOOKBACK_LINES = 200;
+export const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+
+export type OpStatus = 'done' | 'still_running' | 'failed';
 
 export interface Request {
   id: string;
@@ -20,6 +45,11 @@ export interface Response {
   error?: string;
 }
 
+export interface AuthParams {
+  owner?: string;
+  force?: boolean;
+}
+
 export interface StartParams {
   command: string;
   args: string[];
@@ -29,53 +59,118 @@ export interface StartParams {
   env?: Record<string, string>;
   keepaliveInterval?: number;
   wait?: number;
+  owner?: string;
 }
 
 export interface ReadParams {
   sessionId: string;
   since?: number;
+  last?: number;
   buffer?: 'active' | 'normal' | 'alternate';
+  raw?: boolean;
+  maxBytes?: number;
+  fromLastExec?: boolean;
 }
 
-export interface WriteParams {
+export interface WriteParams extends AuthParams {
   sessionId: string;
   input: string;
 }
 
-export interface SendKeyParams {
+export interface SendKeyParams extends AuthParams {
   sessionId: string;
   key: string;
 }
 
-export interface KillParams {
+export interface KillParams extends AuthParams {
   sessionId: string;
 }
 
-export interface ResizeParams {
+export interface ResizeParams extends AuthParams {
   sessionId: string;
   cols: number;
   rows: number;
 }
 
-export interface ExecParams {
+export interface ExecParams extends AuthParams {
   sessionId: string;
   command: string;
   waitMs: number;
   waitForIdle?: number;
+  waitExit?: boolean;
+  maxBytes?: number;
 }
 
 export interface WaitForParams {
   sessionId: string;
   pattern: string;
   timeoutMs: number;
+  from?: number;
+  fromNow?: boolean;
 }
 
 export interface SnapshotParams {
   sessionId: string;
 }
 
-export const SOCKET_PATH = getSocketPath();
-export const IDLE_TIMEOUT_MS = 300_000;
+export interface PeekExecParams {
+  sessionId: string;
+  maxBytes?: number;
+}
+
+export interface LostSessionInfo {
+  id: string;
+  command: string;
+  pid: number;
+  owner: string;
+  startedAt: string;
+  lostAt: string;
+}
+
+export interface PersistState {
+  daemonPid: number;
+  daemonStartedAt: string;
+  cleanShutdown: boolean;
+  lastRestartAt?: string;
+  sessions: Array<{
+    id: string;
+    command: string;
+    pid: number;
+    owner: string;
+    startedAt: string;
+  }>;
+  lostSessions: LostSessionInfo[];
+}
+
+export function truncateUtf8(text: string, maxBytes: number): {
+  output: string;
+  truncated: boolean;
+  totalBytes: number;
+  returnedBytes: number;
+} {
+  const totalBytes = Buffer.byteLength(text, 'utf8');
+  if (maxBytes <= 0 || totalBytes <= maxBytes) {
+    return { output: text, truncated: false, totalBytes, returnedBytes: totalBytes };
+  }
+  let end = Math.min(text.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes) {
+    end--;
+  }
+  let cut = text.slice(0, end);
+  const nl = cut.lastIndexOf('\n');
+  if (nl > 0) cut = cut.slice(0, nl);
+  return {
+    output: cut,
+    truncated: true,
+    totalBytes,
+    returnedBytes: Buffer.byteLength(cut, 'utf8'),
+  };
+}
+
+export function rpcTimeoutForWait(waitMs: number, globalTimeout?: number): number {
+  if (globalTimeout) return globalTimeout;
+  return Math.max(DEFAULT_RPC_TIMEOUT_MS, waitMs + 5_000);
+}
 
 export const KEY_MAP: Record<string, string> = {
   'enter': '\r',

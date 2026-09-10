@@ -3,15 +3,30 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { fork } from 'child_process';
-import { SOCKET_PATH } from './protocol';
+import { getSocketPath, DEFAULT_RPC_TIMEOUT_MS } from './protocol';
 import type { Request, Response } from './protocol';
 
+export class RpcTimeoutError extends Error {
+  constructor(message = 'Connection timeout') {
+    super(message);
+    this.name = 'RpcTimeoutError';
+  }
+}
+
 function sendRequest(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<Response> {
-  const timeout = timeoutMs ?? 30000;
+  const timeout = timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+  const socketPath = getSocketPath();
   return new Promise((resolve, reject) => {
-    const conn = net.createConnection(SOCKET_PATH);
+    const conn = net.createConnection(socketPath);
     const req: Request = { id: crypto.randomBytes(4).toString('hex'), method, params };
     let buffer = '';
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
 
     conn.on('connect', () => {
       conn.write(JSON.stringify(req) + '\n');
@@ -24,42 +39,44 @@ function sendRequest(method: string, params: Record<string, unknown> = {}, timeo
         try {
           const res = JSON.parse(buffer.slice(0, idx)) as Response;
           conn.end();
-          resolve(res);
+          finish(() => resolve(res));
         } catch {
           conn.end();
-          reject(new Error('Invalid response from daemon'));
+          finish(() => reject(new Error('Invalid response from daemon')));
         }
       }
     });
 
-    conn.on('error', (err) => reject(err));
-    conn.on('timeout', () => { conn.destroy(); reject(new Error('Connection timeout')); });
+    conn.on('error', (err) => finish(() => reject(err)));
+    conn.on('timeout', () => {
+      conn.destroy();
+      finish(() => reject(new RpcTimeoutError()));
+    });
     conn.setTimeout(timeout);
   });
 }
 
 async function isDaemonRunning(): Promise<boolean> {
   try {
-    const res = await sendRequest('ping');
+    const res = await sendRequest('ping', {}, 2000);
     return !!res.result;
   } catch {
     return false;
   }
 }
+
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return;
 
-  try { fs.unlinkSync(SOCKET_PATH); } catch {}
+  try { fs.unlinkSync(getSocketPath()); } catch {}
 
   const daemonScript = path.join(__dirname, 'daemon.js');
 
-  // Lockfile to prevent concurrent daemon spawns
-  const lockPath = SOCKET_PATH + '.lock';
+  const lockPath = getSocketPath() + '.lock';
   let lockFd: number | undefined;
   try {
     lockFd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
   } catch {
-    // Another process is starting the daemon — wait for it
     for (let i = 0; i < 25; i++) {
       await new Promise(r => setTimeout(r, 200));
       if (await isDaemonRunning()) return;
@@ -101,4 +118,8 @@ export async function request(method: string, params: Record<string, unknown> = 
   const res = await sendRequest(method, params, timeoutMs);
   if (res.error) throw new Error(res.error);
   return res.result;
+}
+
+export function isRpcTimeout(err: unknown): boolean {
+  return err instanceof RpcTimeoutError || (err instanceof Error && err.name === 'RpcTimeoutError');
 }

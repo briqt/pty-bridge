@@ -73,13 +73,15 @@ npx skills add briqt/pty-bridge -g
 ## 快速开始
 
 ```bash
+export PTY_BRIDGE_OWNER="my-agent"
+
 # 开一个 SSH 会话
-pty-bridge start ssh user@host --keepalive 30
+pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER"
 
-# 执行命令拿输出
-pty-bridge exec <id> "ls -la"
+# 执行命令并等到退出
+pty-bridge exec <id> "ls -la" --wait-exit
 
-# 开一个 Python REPL
+# 开一个 Python REPL（不要用 --wait-exit）
 pty-bridge start python3
 pty-bridge exec <id> "print('hello')"
 
@@ -87,13 +89,15 @@ pty-bridge exec <id> "print('hello')"
 pty-bridge kill <id>
 ```
 
-完整命令参考见 [`skill/SKILL.md`](skill/SKILL.md)。
+完整命令参考见 [`skill/SKILL.md`](skill/SKILL.md)（owner、`--raw`、截断续读、daemon 重启丢失声明）。
 
 ## 架构
 
 - **Daemon**：首次 `start` 自动启动，通过 Unix socket / Named Pipe 管理 PTY 会话
 - **Client**：轻量 CLI，向 daemon 发送命令
 - **Sessions**：每个会话独立 PTY + xterm.js headless terminal 解析输出
+- **Owner**：会话带所有者；写别人的会话默认拒绝，需 `--force`
+- **Tombstone**：daemon 崩溃后 `list` / `status` 会声明丢失了哪些会话
 
 daemon 在 5 分钟无活跃会话后自动退出。
 
@@ -103,7 +107,7 @@ daemon 在 5 分钟无活跃会话后自动退出。
 git clone https://github.com/briqt/pty-bridge.git
 cd pty-bridge
 npm install      # 安装依赖 + 开发依赖
-npm run build    # tsc → dist/
+npm test         # tsc → dist/ 后跑 integration 测试
 ```
 
 编辑 `src/*.ts`，运行 `npm run build`，本地测试（如 `node dist/cli.js status`）。
@@ -111,7 +115,7 @@ npm run build    # tsc → dist/
 ### 发布
 
 ```bash
-npm publish      # prepublishOnly 自动构建；files: ["dist"] 只发布编译后的 JS
+npm publish      # prepublishOnly 会跑测试（含构建）；files: ["dist"] 只发布编译后的 JS
 ```
 
 原生二进制不在仓库里——npm 通过 optional dependencies 按平台解析对应的 `@lydell/node-pty-<platform>` 包。

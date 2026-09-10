@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 
-import { request } from './client';
+import { request, isRpcTimeout } from './client';
+import { defaultOwner, rpcTimeoutForWait } from './protocol';
 
 const args = process.argv.slice(2);
 
-// Extract global --timeout flag before command parsing
 let globalTimeout: number | undefined;
 const timeoutIdx = args.indexOf('--timeout');
 if (timeoutIdx !== -1 && args[0] !== 'wait-for') {
-  // Only treat as global if it appears before the command or is the first flag
-  // (wait-for has its own --timeout which means seconds, not ms)
   const beforeCommand = timeoutIdx === 0;
   if (beforeCommand) {
     globalTimeout = parseInt(args[timeoutIdx + 1], 10);
@@ -18,6 +16,9 @@ if (timeoutIdx !== -1 && args[0] !== 'wait-for') {
       process.exit(1);
     }
     args.splice(timeoutIdx, 2);
+  } else {
+    console.error('Error: --timeout must appear before the subcommand, e.g. pty-bridge --timeout 60000 exec <id> "cmd". For exec wait budget use --wait <ms>. For wait-for, use --timeout <seconds> as a subcommand flag.');
+    process.exit(1);
   }
 }
 
@@ -27,15 +28,16 @@ function usage(): void {
   console.log(`pty-bridge — manage interactive terminal sessions
 
 Usage:
+  pty-bridge [--timeout <ms>] [--owner <name>] <command> [options]
+
   pty-bridge start <command> [args...]                Start a PTY session
-  pty-bridge read <id> [--full] [--buffer <type>]     Read terminal output (incremental by default)
+  pty-bridge read <id> [options]                      Read terminal output
   pty-bridge write <id> <input>                       Send input (or pipe via stdin)
-  pty-bridge exec <id> <command> [--wait <ms>]        Execute command and return new output
-                                [--wait-for-idle <ms>]
+  pty-bridge exec <id> <command> [options]            Execute command and return new output
   pty-bridge sendkey <id> <key>                       Send special key (ctrl-c, enter, tab, up, etc.)
-  pty-bridge wait-for <id> <pattern> [--timeout <s>]  Block until pattern appears in output
+  pty-bridge wait-for <id> <pattern> [--timeout <s>]  Block until pattern appears
   pty-bridge snapshot <id>                            Capture current visible screen
-  pty-bridge list                                     List active sessions
+  pty-bridge list                                     List active and lost sessions
   pty-bridge kill <id>                                Terminate a session
   pty-bridge resize <id> <cols> <rows>                Resize terminal
   pty-bridge status                                   Show daemon status
@@ -43,13 +45,34 @@ Usage:
 Start options:
   --keepalive <secs>   Send keepalive to PTY every N seconds
   --wait <ms>          Initial wait before returning output (default: 500)
+  --cols <n> --rows <n>
+  --owner <name>       Session owner (default: $PTY_BRIDGE_OWNER or $USER)
 
 Read options:
-  --buffer <type>      Buffer to read from: active (default), normal, or alternate
+  --full               Entire buffer (does not advance incremental cursor)
+  --from <n>           From line n (does not advance cursor)
+  --from-exec          From last exec start (resume after timeout)
+  --last <n>, --lines <n>
+                       Last n lines (does not advance cursor)
+  --raw                Unwrapped PTY byte stream (skips xterm wrapping)
+  --max-bytes <n>      Truncate (default 256000; 0 = unlimited)
+  --buffer <type>      active (default), normal, or alternate
 
 Exec options:
-  --wait-for-idle <ms> Wait for output to stabilize (poll interval) before returning`);
-  // --help/-h is not an error; unknown commands are
+  --wait <ms>          Wait budget before returning (default: 200; 30000 with --wait-exit)
+  --wait-for-idle <ms> Poll until output stabilizes
+  --wait-exit          Shell only: inject a sentinel and return done/failed + exit code
+  --max-bytes <n>      Truncate returned output
+  --force              Override owner check
+
+Write/sendkey/kill/resize:
+  --owner <name>       Caller identity (default: $PTY_BRIDGE_OWNER or $USER)
+  --force              Allow mutating a session owned by someone else
+
+Wait-for options:
+  --timeout <s>        Seconds to wait (default: 30)
+  --from <n>           Search from line n (default: last 200 lines + new output)
+  --from-now           Only match output that appears after this call`);
   const isHelp = command === '--help' || command === '-h';
   process.exit(isHelp || !command ? 0 : 1);
 }
@@ -71,6 +94,69 @@ function parseFlag(argList: string[], flag: string): { value: string | undefined
   return { value, rest };
 }
 
+function parseBoolFlag(argList: string[], flag: string): { present: boolean; rest: string[] } {
+  const present = argList.includes(flag);
+  return { present, rest: argList.filter(a => a !== flag) };
+}
+
+function rejectUnknownFlags(rest: string[], context: string): void {
+  const unknown = rest.filter(a => a.startsWith('-') && a !== '--');
+  if (unknown.length > 0) {
+    console.error(`Error: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')} for ${context}`);
+    process.exit(1);
+  }
+}
+
+function parseOwnerForce(argList: string[]): { owner: string; force: boolean; rest: string[] } {
+  const o = parseFlag(argList, '--owner');
+  const f = parseBoolFlag(o.rest, '--force');
+  return { owner: o.value || defaultOwner(), force: f.present, rest: f.rest };
+}
+
+function writeMeta(fields: Record<string, string | number | boolean | undefined>): void {
+  const parts = Object.entries(fields)
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${v}`);
+  process.stderr.write(`[${parts.join(' ')}]\n`);
+}
+
+interface ExecLikeResult {
+  output: string;
+  status?: string;
+  isAlive: boolean;
+  exitCode?: number;
+  startCursor?: number;
+  cursor?: number;
+  truncated?: boolean;
+  totalBytes?: number;
+  returnedBytes?: number;
+}
+
+function printExecResult(result: ExecLikeResult): void {
+  if (result.output) console.log(result.output);
+  writeMeta({
+    status: result.status,
+    cursor: result.cursor,
+    startCursor: result.startCursor,
+    alive: result.isAlive,
+    truncated: result.truncated,
+    totalBytes: result.totalBytes,
+    returnedBytes: result.returnedBytes,
+    exitCode: result.exitCode,
+  });
+  if (!result.isAlive) {
+    console.log(`\n[Process exited with code ${result.exitCode ?? 'unknown'}]`);
+  }
+}
+
+async function peekAfterTimeout(sessionId: string): Promise<ExecLikeResult | null> {
+  try {
+    return await request('peekExec', { sessionId }) as ExecLikeResult;
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   if (!command || command === '--help' || command === '-h') usage();
 
@@ -88,20 +174,24 @@ async function main(): Promise<void> {
         cmdArgs = colsFlag.rest;
         const rowsFlag = parseFlag(cmdArgs, '--rows');
         cmdArgs = rowsFlag.rest;
+        const ownerFlag = parseFlag(cmdArgs, '--owner');
+        cmdArgs = ownerFlag.rest;
         const keepaliveInterval = ka.value ? parseInt(ka.value, 10) : undefined;
         const wait = w.value ? parseInt(w.value, 10) : undefined;
         const cols = colsFlag.value ? parseInt(colsFlag.value, 10) : 120;
         const rows = rowsFlag.value ? parseInt(rowsFlag.value, 10) : 40;
+        const owner = ownerFlag.value || defaultOwner();
         const result = await request('start', {
           command: cmd,
           args: cmdArgs,
           cols,
           rows,
           cwd: process.cwd(),
+          owner,
           ...(keepaliveInterval ? { keepaliveInterval } : {}),
           ...(wait !== undefined && !isNaN(wait) ? { wait } : {}),
-        }, globalTimeout) as { sessionId: string; output: string };
-        console.log(`Session: ${result.sessionId}`);
+        }, globalTimeout) as { sessionId: string; output: string; owner?: string; cursor?: number };
+        console.log(`Session: ${result.sessionId} owner=${result.owner || owner}`);
         if (result.output) console.log(result.output);
         break;
       }
@@ -110,27 +200,87 @@ async function main(): Promise<void> {
         const id = args[1];
         if (!id) { console.error('Error: session id required'); usage(); }
         let readArgs = args.slice(2);
-        const full = readArgs.includes('--full');
-        readArgs = readArgs.filter(a => a !== '--full');
+        const full = parseBoolFlag(readArgs, '--full');
+        readArgs = full.rest;
+        const raw = parseBoolFlag(readArgs, '--raw');
+        readArgs = raw.rest;
+        const fromExec = parseBoolFlag(readArgs, '--from-exec');
+        readArgs = fromExec.rest;
+        const fromFlag = parseFlag(readArgs, '--from');
+        readArgs = fromFlag.rest;
+        const lastFlag = parseFlag(readArgs, '--last');
+        readArgs = lastFlag.rest;
+        const linesFlag = parseFlag(readArgs, '--lines');
+        readArgs = linesFlag.rest;
+        const maxFlag = parseFlag(readArgs, '--max-bytes');
+        readArgs = maxFlag.rest;
         const bufFlag = parseFlag(readArgs, '--buffer');
         readArgs = bufFlag.rest;
+        rejectUnknownFlags(readArgs, 'read');
+
+        const lastRaw = lastFlag.value ?? linesFlag.value;
+        const last = lastRaw ? parseInt(lastRaw, 10) : undefined;
+        const from = fromFlag.value ? parseInt(fromFlag.value, 10) : undefined;
+        const maxBytes = maxFlag.value ? parseInt(maxFlag.value, 10) : undefined;
         const buf = bufFlag.value as 'active' | 'normal' | 'alternate' | undefined;
+
+        const exclusive = [full.present, from !== undefined, last !== undefined, fromExec.present].filter(Boolean).length;
+        if (exclusive > 1) {
+          console.error('Error: --full, --from, --from-exec, and --last/--lines are mutually exclusive');
+          process.exit(1);
+        }
+        if (lastRaw !== undefined && (last === undefined || isNaN(last) || last < 0)) {
+          console.error('Error: --last/--lines must be a non-negative integer');
+          process.exit(1);
+        }
+        if (fromFlag.value !== undefined && (from === undefined || isNaN(from) || from < 0)) {
+          console.error('Error: --from must be a non-negative integer');
+          process.exit(1);
+        }
+
         const params: Record<string, unknown> = { sessionId: id };
-        if (full) params.since = 0;
+        if (full.present) params.since = 0;
+        if (from !== undefined) params.since = from;
+        if (last !== undefined) params.last = last;
+        if (fromExec.present) params.fromLastExec = true;
+        if (raw.present) params.raw = true;
         if (buf) params.buffer = buf;
-        const result = await request('read', params) as { output: string; isAlive: boolean; exitCode?: number; totalLines: number; bufferType?: string };
-        console.log(result.output);
-        process.stderr.write(`[lines=${result.totalLines} alive=${result.isAlive} buffer=${result.bufferType ?? '?'}${result.exitCode !== undefined ? ` exitCode=${result.exitCode}` : ''}]\n`);
+        if (maxBytes !== undefined) {
+          if (isNaN(maxBytes) || maxBytes < 0) {
+            console.error('Error: --max-bytes must be a non-negative integer (0 = unlimited)');
+            process.exit(1);
+          }
+          params.maxBytes = maxBytes;
+        }
+
+        const result = await request('read', params, globalTimeout) as {
+          output: string; isAlive: boolean; exitCode?: number; totalLines: number; bufferType?: string;
+          cursor?: number; startCursor?: number; truncated?: boolean; totalBytes?: number; returnedBytes?: number; raw?: boolean;
+        };
+        if (result.output) console.log(result.output);
+        writeMeta({
+          lines: result.totalLines,
+          alive: result.isAlive,
+          buffer: result.bufferType ?? '?',
+          cursor: result.cursor,
+          startCursor: result.startCursor,
+          truncated: result.truncated,
+          totalBytes: result.totalBytes,
+          returnedBytes: result.returnedBytes,
+          raw: result.raw,
+          exitCode: result.exitCode,
+        });
         break;
       }
 
       case 'write': {
         const id = args[1];
         if (!id) { console.error('Error: session id required'); usage(); }
-        const useStdin = args.includes('--stdin');
-        const textArgs = args.slice(2).filter(a => a !== '--stdin');
+        const parsed = parseOwnerForce(args.slice(2));
+        const stdinFlag = parseBoolFlag(parsed.rest, '--stdin');
+        const textArgs = stdinFlag.rest;
         let input: string;
-        if (useStdin) {
+        if (stdinFlag.present) {
           input = await readStdin();
         } else if (textArgs.length > 0) {
           input = textArgs.join(' ');
@@ -140,7 +290,7 @@ async function main(): Promise<void> {
           return;
         }
         if (!input) { console.error('Error: empty input'); process.exit(1); }
-        await request('write', { sessionId: id, input });
+        await request('write', { sessionId: id, input, owner: parsed.owner, force: parsed.force }, globalTimeout);
         break;
       }
 
@@ -148,27 +298,74 @@ async function main(): Promise<void> {
         const id = args[1];
         if (!id) { console.error('Error: session id required'); usage(); }
         let execArgs = args.slice(2);
+        const parsed = parseOwnerForce(execArgs);
+        execArgs = parsed.rest;
         const w = parseFlag(execArgs, '--wait');
         execArgs = w.rest;
         const idle = parseFlag(execArgs, '--wait-for-idle');
         execArgs = idle.rest;
-        const waitMs = w.value ? parseInt(w.value, 10) : (idle.value ? 5000 : 200);
-        const waitForIdle = idle.value ? parseInt(idle.value, 10) : undefined;
+        const waitExit = parseBoolFlag(execArgs, '--wait-exit');
+        execArgs = waitExit.rest;
+        const maxFlag = parseFlag(execArgs, '--max-bytes');
+        execArgs = maxFlag.rest;
+        if (execArgs.includes('--timeout')) {
+          console.error('Error: --timeout is a global flag and must appear before the subcommand: pty-bridge --timeout <ms> exec ... . Use --wait <ms> for the exec wait budget.');
+          process.exit(1);
+        }
+        if (waitExit.present && idle.value) {
+          console.error('Error: --wait-exit and --wait-for-idle cannot be combined');
+          process.exit(1);
+        }
         if (execArgs.length === 0) { console.error('Error: command required'); usage(); }
         const cmd = execArgs.join(' ');
-        const result = await request('exec', { sessionId: id, command: cmd, waitMs, ...(waitForIdle ? { waitForIdle } : {}) }) as { output: string; isAlive: boolean; exitCode?: number };
-        console.log(result.output);
-        if (!result.isAlive) {
-          console.log(`\n[Process exited with code ${result.exitCode ?? 'unknown'}]`);
+        const waitMs = w.value ? parseInt(w.value, 10) : (waitExit.present ? 30000 : (idle.value ? 5000 : 200));
+        if (isNaN(waitMs) || waitMs < 0) {
+          console.error('Error: --wait must be a non-negative integer');
+          process.exit(1);
+        }
+        const waitForIdle = idle.value ? parseInt(idle.value, 10) : undefined;
+        const maxBytes = maxFlag.value ? parseInt(maxFlag.value, 10) : undefined;
+        const params: Record<string, unknown> = {
+          sessionId: id,
+          command: cmd,
+          waitMs,
+          owner: parsed.owner,
+          force: parsed.force,
+          ...(waitForIdle ? { waitForIdle } : {}),
+          ...(waitExit.present ? { waitExit: true } : {}),
+        };
+        if (maxBytes !== undefined) {
+          if (isNaN(maxBytes) || maxBytes < 0) {
+            console.error('Error: --max-bytes must be a non-negative integer (0 = unlimited)');
+            process.exit(1);
+          }
+          params.maxBytes = maxBytes;
+        }
+        const socketTimeout = rpcTimeoutForWait(waitMs, globalTimeout);
+        try {
+          const result = await request('exec', params, socketTimeout) as ExecLikeResult;
+          printExecResult(result);
+        } catch (err: unknown) {
+          if (!isRpcTimeout(err)) throw err;
+          const peek = await peekAfterTimeout(id);
+          if (peek) {
+            peek.status = peek.status || 'still_running';
+            printExecResult(peek);
+          } else {
+            writeMeta({ status: 'still_running', alive: true, error: 'rpc_timeout' });
+            console.error('RPC timed out; command was already sent. Use: pty-bridge read <id> --from-exec');
+          }
         }
         break;
       }
 
       case 'sendkey': {
         const id = args[1];
-        const key = args[2];
+        const parsed = parseOwnerForce(args.slice(2));
+        const key = parsed.rest[0];
+        rejectUnknownFlags(parsed.rest.slice(1), 'sendkey');
         if (!id || !key) { console.error('Error: session id and key required'); usage(); }
-        await request('sendkey', { sessionId: id, key });
+        await request('sendkey', { sessionId: id, key, owner: parsed.owner, force: parsed.force }, globalTimeout);
         break;
       }
 
@@ -178,12 +375,34 @@ async function main(): Promise<void> {
         if (!id || !pattern) { console.error('Error: session id and pattern required'); usage(); }
         let wfArgs = args.slice(3);
         const t = parseFlag(wfArgs, '--timeout');
+        wfArgs = t.rest;
+        const fromFlag = parseFlag(wfArgs, '--from');
+        wfArgs = fromFlag.rest;
+        const fromNow = parseBoolFlag(wfArgs, '--from-now');
+        wfArgs = fromNow.rest;
+        rejectUnknownFlags(wfArgs, 'wait-for');
+        if (fromNow.present && fromFlag.value) {
+          console.error('Error: --from and --from-now are mutually exclusive');
+          process.exit(1);
+        }
         const timeoutSec = t.value ? parseInt(t.value, 10) : 30;
         if (isNaN(timeoutSec) || timeoutSec <= 0) { console.error('Error: invalid timeout value'); process.exit(1); }
+        const from = fromFlag.value ? parseInt(fromFlag.value, 10) : undefined;
+        if (fromFlag.value !== undefined && (from === undefined || isNaN(from) || from < 0)) {
+          console.error('Error: --from must be a non-negative integer');
+          process.exit(1);
+        }
         const timeoutMs = timeoutSec * 1000;
-        const socketTimeout = timeoutMs + 5000;
-        const result = await request('waitFor', { sessionId: id, pattern, timeoutMs }, socketTimeout) as { matched: boolean; output: string; error?: string };
+        const socketTimeout = rpcTimeoutForWait(timeoutMs, globalTimeout);
+        const result = await request('waitFor', {
+          sessionId: id,
+          pattern,
+          timeoutMs,
+          ...(fromNow.present ? { fromNow: true } : {}),
+          ...(from !== undefined ? { from } : {}),
+        }, socketTimeout) as { matched: boolean; output: string; error?: string; cursor?: number; startCursor?: number };
         if (result.output) console.log(result.output);
+        writeMeta({ matched: result.matched, cursor: result.cursor, startCursor: result.startCursor });
         if (!result.matched) {
           console.error(result.error || `Timeout waiting for pattern: ${pattern}`);
           process.exit(1);
@@ -194,20 +413,35 @@ async function main(): Promise<void> {
       case 'snapshot': {
         const id = args[1];
         if (!id) { console.error('Error: session id required'); usage(); }
-        const result = await request('snapshot', { sessionId: id }) as { success: boolean; lines: string[]; cursorX: number; cursorY: number; bufferType: string; cols: number; rows: number };
+        rejectUnknownFlags(args.slice(2), 'snapshot');
+        const result = await request('snapshot', { sessionId: id }, globalTimeout) as { success: boolean; lines: string[]; cursorX: number; cursorY: number; bufferType: string; cols: number; rows: number };
         console.log(`[buffer=${result.bufferType}  cursor=${result.cursorX},${result.cursorY}  size=${result.cols}x${result.rows}]`);
         console.log(result.lines.join('\n'));
         break;
       }
 
       case 'list': {
-        const result = await request('list') as { sessions: Array<{ id: string; command: string; pid: number; isAlive: boolean; uptime: string; bufferLines: number; bufferType: string; lastActivityAt: string }> };
+        rejectUnknownFlags(args.slice(1), 'list');
+        const result = await request('list', {}, globalTimeout) as {
+          sessions: Array<{ id: string; command: string; pid: number; isAlive: boolean; uptime: string; bufferLines: number; bufferType: string; lastActivityAt: string; owner?: string }>;
+          lostSessions?: Array<{ id: string; command: string; pid: number; owner: string; startedAt: string; lostAt: string }>;
+          lastRestartAt?: string;
+          lostCount?: number;
+        };
+        if (result.lostCount && result.lostCount > 0) {
+          console.error(`Warning: daemon restarted at ${result.lastRestartAt ?? 'unknown'}, ${result.lostCount} session(s) lost`);
+        }
         if (result.sessions.length === 0) {
           console.log('No active sessions');
         } else {
           for (const s of result.sessions) {
             const status = s.isAlive ? 'alive' : 'dead';
-            console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  buffer=${s.bufferType}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
+            console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  owner=${s.owner || '-'}  buffer=${s.bufferType}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
+          }
+        }
+        if (result.lostSessions) {
+          for (const s of result.lostSessions) {
+            console.log(`lost  ${s.id}  ${s.command}  pid=${s.pid}  owner=${s.owner || '-'}  started=${s.startedAt}  lostAt=${s.lostAt}  (reattach not supported; remote nohup may still be running)`);
           }
         }
         break;
@@ -216,31 +450,43 @@ async function main(): Promise<void> {
       case 'kill': {
         const id = args[1];
         if (!id) { console.error('Error: session id required'); usage(); }
-        await request('kill', { sessionId: id });
+        const parsed = parseOwnerForce(args.slice(2));
+        rejectUnknownFlags(parsed.rest, 'kill');
+        await request('kill', { sessionId: id, owner: parsed.owner, force: parsed.force }, globalTimeout);
         console.log(`Session ${id} killed`);
         break;
       }
 
       case 'resize': {
         const id = args[1];
-        const cols = parseInt(args[2], 10);
-        const rows = parseInt(args[3], 10);
+        const parsed = parseOwnerForce(args.slice(2));
+        const cols = parseInt(parsed.rest[0], 10);
+        const rows = parseInt(parsed.rest[1], 10);
+        rejectUnknownFlags(parsed.rest.slice(2), 'resize');
         if (!id || isNaN(cols) || isNaN(rows)) {
           console.error('Error: session id, cols, and rows required');
           usage();
         }
-        await request('resize', { sessionId: id, cols, rows });
+        await request('resize', { sessionId: id, cols, rows, owner: parsed.owner, force: parsed.force }, globalTimeout);
         console.log(`Session ${id} resized to ${cols}x${rows}`);
         break;
       }
 
       case 'status': {
-        const result = await request('status') as { daemonStartedAt: string; pid: number; activeSessions: number; totalSessions: number; memoryUsageMB: number };
+        rejectUnknownFlags(args.slice(1), 'status');
+        const result = await request('status', {}, globalTimeout) as {
+          daemonStartedAt: string; pid: number; activeSessions: number; totalSessions: number; memoryUsageMB: number;
+          lastRestartAt?: string; lostCount?: number;
+        };
         console.log(`Daemon PID:        ${result.pid}`);
         console.log(`Started at:        ${result.daemonStartedAt}`);
         console.log(`Active sessions:   ${result.activeSessions}`);
         console.log(`Total sessions:    ${result.totalSessions}`);
         console.log(`Memory usage:      ${result.memoryUsageMB} MB`);
+        if (result.lostCount && result.lostCount > 0) {
+          console.log(`Last restart:      ${result.lastRestartAt ?? 'unknown'}`);
+          console.log(`Lost sessions:     ${result.lostCount}`);
+        }
         break;
       }
 
@@ -250,6 +496,11 @@ async function main(): Promise<void> {
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isRpcTimeout(err)) {
+      writeMeta({ status: 'still_running', error: 'rpc_timeout' });
+      console.error('Error: RPC timed out. If this was exec, the command was already sent — do not resend. Use: pty-bridge read <id> --from-exec');
+      process.exit(0);
+    }
     console.error(`Error: ${msg}`);
     process.exit(1);
   }

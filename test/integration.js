@@ -1,0 +1,224 @@
+#!/usr/bin/env node
+'use strict';
+
+const { spawnSync, execSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..');
+const CLI = path.join(ROOT, 'dist', 'cli.js');
+const SOCKET = path.join(os.tmpdir(), `pty-bridge-test-${process.pid}.sock`);
+const STATE = `${SOCKET}.state.json`;
+
+const envBase = {
+  ...process.env,
+  PTY_BRIDGE_SOCKET: SOCKET,
+  PTY_BRIDGE_STATE: STATE,
+  PTY_BRIDGE_OWNER: 'tester',
+};
+
+let failed = 0;
+let passed = 0;
+
+function check(name, cond, detail) {
+  if (cond) {
+    passed++;
+    console.log(`ok  ${name}`);
+  } else {
+    failed++;
+    console.error(`FAIL  ${name}${detail ? `\n      ${detail}` : ''}`);
+  }
+}
+
+function run(args, extraEnv = {}, timeout = 20000) {
+  return spawnSync(process.execPath, [CLI, ...args], {
+    env: { ...envBase, ...extraEnv },
+    encoding: 'utf8',
+    timeout,
+  });
+}
+
+function sessionId(stdout) {
+  const m = String(stdout).match(/Session: ([0-9a-f]+)/);
+  return m ? m[1] : '';
+}
+
+function meta(stderr) {
+  const m = String(stderr).match(/\[([^\]]+)\]/);
+  return m ? m[1] : '';
+}
+
+function cleanup() {
+  try {
+    const st = run(['status']);
+    const m = String(st.stdout).match(/Daemon PID:\s+(\d+)/);
+    if (m) {
+      try { process.kill(parseInt(m[1], 10), 'SIGKILL'); } catch {}
+    }
+  } catch {}
+  try { fs.unlinkSync(SOCKET); } catch {}
+  try { fs.unlinkSync(STATE); } catch {}
+  try { fs.unlinkSync(SOCKET + '.lock'); } catch {}
+}
+
+process.on('exit', cleanup);
+
+function startBash(extraEnv) {
+  const r = run(['start', 'bash', '--norc', '--noprofile', '--wait', '400'], extraEnv);
+  const id = sessionId(r.stdout);
+  check('start bash', r.status === 0 && !!id, `status=${r.status} stdout=${r.stdout} stderr=${r.stderr}`);
+  return id;
+}
+
+console.log('pty-bridge integration tests');
+
+cleanup();
+
+// --- unknown flags error instead of silent ignore
+{
+  const r = run(['read', 'deadbeef', '--not-a-flag']);
+  check('read unknown flag errors', r.status !== 0 && /unknown option/.test(r.stderr), r.stderr);
+}
+
+{
+  const r = run(['exec', 'deadbeef', 'echo hi', '--timeout', '1000']);
+  check('misplaced --timeout on exec errors', r.status !== 0 && /must appear before the subcommand/.test(r.stderr), r.stderr);
+}
+
+{
+  const r = run(['status', '--timeout', '5000']);
+  check('misplaced --timeout before handled globally only at argv0', r.status !== 0 && /must appear before the subcommand/.test(r.stderr), r.stderr);
+}
+
+const id = startBash();
+if (!id) {
+  console.error('cannot continue without a session');
+  process.exit(1);
+}
+
+// --- wait-exit
+{
+  const r = run(['exec', id, 'echo hello-wait-exit', '--wait-exit', '--wait', '8000']);
+  const m = meta(r.stderr);
+  check('wait-exit stdout contains payload', /hello-wait-exit/.test(r.stdout), r.stdout);
+  check('wait-exit status=done', /status=done/.test(m), m);
+  check('wait-exit exitCode=0', /exitCode=0/.test(m), m);
+  check('wait-exit strips sentinel', !/PTYBRIDGE_DONE_/.test(r.stdout), r.stdout);
+}
+
+{
+  const r = run(['exec', id, 'false', '--wait-exit', '--wait', '8000']);
+  const m = meta(r.stderr);
+  check('wait-exit false status=failed', /status=failed/.test(m), m);
+  check('wait-exit false exitCode=1', /exitCode=1/.test(m), m);
+  check('wait-exit false session still alive', /alive=true/.test(m), m);
+}
+
+// --- exec still_running + cursor
+{
+  const r = run(['exec', id, 'echo still-here', '--wait', '400']);
+  const m = meta(r.stderr);
+  check('plain exec still_running (shell session stays alive)', /status=still_running/.test(m), m);
+  check('plain exec has cursor', /cursor=\d+/.test(m), m);
+  check('plain exec output', /still-here/.test(r.stdout), r.stdout);
+}
+
+// --- read --lines is real
+{
+  run(['exec', id, 'python3 -c "print(\'L1\\nL2\\nL3\\nL4\\nL5\')"', '--wait-exit', '--wait', '8000']);
+  const r = run(['read', id, '--lines', '3']);
+  check('read --lines is not ignored', r.status === 0 && r.stdout.trim().length > 0, `status=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${r.stderr}`);
+  check('read --lines metadata has truncated field', /truncated=/.test(r.stderr), r.stderr);
+}
+
+{
+  const r = run(['read', id, '--full', '--last', '2']);
+  check('read mutually exclusive flags error', r.status !== 0 && /mutually exclusive/.test(r.stderr), r.stderr);
+}
+
+// --- max-bytes truncation
+{
+  const r = run(['exec', id, 'python3 -c "print(\'Z\'*4000)"', '--wait-exit', '--wait', '8000', '--max-bytes', '200']);
+  const m = meta(r.stderr);
+  check('max-bytes truncates', /truncated=true/.test(m), m);
+  check('max-bytes reports totals', /totalBytes=\d+/.test(m) && /returnedBytes=\d+/.test(m), m);
+  check('max-bytes returned smaller than total', (() => {
+    const tot = Number((m.match(/totalBytes=(\d+)/) || [])[1]);
+    const ret = Number((m.match(/returnedBytes=(\d+)/) || [])[1]);
+    return tot > ret && ret > 0;
+  })(), m);
+}
+
+// --- raw vs wrapped
+{
+  const wide = run(['start', 'bash', '--norc', '--noprofile', '--cols', '12', '--rows', '8', '--wait', '400']);
+  const wid = sessionId(wide.stdout);
+  check('narrow session started', !!wid, wide.stdout);
+  if (wid) {
+    run(['exec', wid, 'echo ABCDEFGHIJKLMNOPQRSTUVWXYZ', '--wait-exit', '--wait', '8000']);
+    const wrapped = run(['read', wid, '--full']);
+    const raw = run(['read', wid, '--raw', '--full']);
+    check('wrapped read splits long echo', /ABCDEFGHIJK/.test(wrapped.stdout), wrapped.stdout);
+    check('raw read keeps unwrapped stream', /ABCDEFGHIJKLMNOPQRSTUVWXYZ/.test(raw.stdout.replace(/\r/g, '')), raw.stdout);
+    run(['kill', wid]);
+  }
+}
+
+// --- owner guard
+{
+  const other = run(['exec', id, 'echo pwned', '--wait', '200'], { PTY_BRIDGE_OWNER: 'intruder' });
+  check('owner mismatch rejected', other.status !== 0 && /owned by/.test(other.stderr), other.stderr);
+  const forced = run(['exec', id, 'echo allowed-force', '--wait', '400', '--force'], { PTY_BRIDGE_OWNER: 'intruder' });
+  check('owner mismatch allowed with --force', forced.status === 0 && /allowed-force/.test(forced.stdout), `status=${forced.status} ${forced.stdout} ${forced.stderr}`);
+}
+
+{
+  const r = run(['list']);
+  check('list shows owner', /owner=tester/.test(r.stdout), r.stdout);
+}
+
+// --- RPC timeout is still_running, not a failed exec (do not resend)
+{
+  const r = run(['--timeout', '400', 'exec', id, 'sleep 2; echo AFTERTO', '--wait', '8000'], {}, 15000);
+  check('rpc timeout exit 0', r.status === 0, `status=${r.status} stderr=${r.stderr}`);
+  check('rpc timeout reports still_running not Connection timeout failure', /status=still_running/.test(r.stderr) && !/Error: Connection timeout/.test(r.stderr), r.stderr);
+  const caught = run(['wait-for', id, 'AFTERTO', '--timeout', '8']);
+  check('timed-out exec still ran; resume via wait-for', caught.status === 0 && /AFTERTO/.test(caught.stdout), `${caught.stdout} ${caught.stderr}`);
+}
+
+// --- wait-for lookback (does not scan entire ancient history)
+{
+  const tokenOld = `OLDTOKEN${process.pid}`;
+  const tokenNew = `NEWTOKEN${process.pid}`;
+  run(['exec', id, `echo ${tokenOld}`, '--wait-exit', '--wait', '8000']);
+  run(['exec', id, 'python3 -c "print(\'\\n\'.join(str(i) for i in range(250)))"', '--wait-exit', '--wait', '15000']);
+  const old = run(['wait-for', id, tokenOld, '--timeout', '2']);
+  check('wait-for does not match ancient pattern', old.status !== 0, `status=${old.status} stdout=${old.stdout} stderr=${old.stderr}`);
+  const now = run(['exec', id, `echo ${tokenNew}`, '--wait', '200']);
+  check('new token emitted', now.status === 0, now.stderr);
+  const matched = run(['wait-for', id, tokenNew, '--timeout', '5']);
+  check('wait-for matches recent pattern', matched.status === 0 && new RegExp(tokenNew).test(matched.stdout + matched.stderr), `${matched.stdout} ${matched.stderr}`);
+}
+
+// --- tombstone after daemon kill
+{
+  const st = run(['status']);
+  const pidMatch = String(st.stdout).match(/Daemon PID:\s+(\d+)/);
+  check('status has pid', !!pidMatch, st.stdout);
+  if (pidMatch) {
+    const dpid = parseInt(pidMatch[1], 10);
+    try { process.kill(dpid, 'SIGKILL'); } catch {}
+    // wait for death
+    for (let i = 0; i < 20; i++) {
+      try { process.kill(dpid, 0); execSync('sleep 0.1'); } catch { break; }
+    }
+    const listed = run(['list']);
+    check('list warns about lost sessions after restart', /session\(s\) lost/.test(listed.stderr) || /lost  /.test(listed.stdout), `stdout=${listed.stdout}\nstderr=${listed.stderr}`);
+    const st2 = run(['status']);
+    check('status reports lost sessions', /Lost sessions:/.test(st2.stdout), st2.stdout);
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

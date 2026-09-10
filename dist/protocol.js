@@ -1,16 +1,66 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.KEY_MAP = exports.IDLE_TIMEOUT_MS = exports.SOCKET_PATH = void 0;
+exports.KEY_MAP = exports.DEFAULT_RPC_TIMEOUT_MS = exports.WAIT_FOR_LOOKBACK_LINES = exports.RAW_BUFFER_CAP = exports.DEFAULT_MAX_BYTES = exports.IDLE_TIMEOUT_MS = exports.SOCKET_PATH = void 0;
+exports.getSocketPath = getSocketPath;
+exports.getStatePath = getStatePath;
+exports.defaultOwner = defaultOwner;
+exports.truncateUtf8 = truncateUtf8;
+exports.rpcTimeoutForWait = rpcTimeoutForWait;
 const os_1 = require("os");
+const path_1 = require("path");
 function getSocketPath() {
+    if (process.env.PTY_BRIDGE_SOCKET)
+        return process.env.PTY_BRIDGE_SOCKET;
     if ((0, os_1.platform)() === 'win32') {
         const username = process.env.USERNAME || process.env.USER || 'default';
         return `\\\\.\\pipe\\pty-bridge-${username}`;
     }
     return `/tmp/pty-bridge-${process.getuid?.() ?? 0}.sock`;
 }
+function getStatePath() {
+    if (process.env.PTY_BRIDGE_STATE)
+        return process.env.PTY_BRIDGE_STATE;
+    const socket = getSocketPath();
+    if ((0, os_1.platform)() === 'win32') {
+        const username = process.env.USERNAME || process.env.USER || 'default';
+        return (0, path_1.join)((0, os_1.tmpdir)(), `pty-bridge-${username}.state.json`);
+    }
+    return `${socket}.state.json`;
+}
+function defaultOwner() {
+    return process.env.PTY_BRIDGE_OWNER || process.env.USER || process.env.USERNAME || 'default';
+}
 exports.SOCKET_PATH = getSocketPath();
 exports.IDLE_TIMEOUT_MS = 300_000;
+exports.DEFAULT_MAX_BYTES = 256_000;
+exports.RAW_BUFFER_CAP = 8 * 1024 * 1024;
+exports.WAIT_FOR_LOOKBACK_LINES = 200;
+exports.DEFAULT_RPC_TIMEOUT_MS = 30_000;
+function truncateUtf8(text, maxBytes) {
+    const totalBytes = Buffer.byteLength(text, 'utf8');
+    if (maxBytes <= 0 || totalBytes <= maxBytes) {
+        return { output: text, truncated: false, totalBytes, returnedBytes: totalBytes };
+    }
+    let end = Math.min(text.length, maxBytes);
+    while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes) {
+        end--;
+    }
+    let cut = text.slice(0, end);
+    const nl = cut.lastIndexOf('\n');
+    if (nl > 0)
+        cut = cut.slice(0, nl);
+    return {
+        output: cut,
+        truncated: true,
+        totalBytes,
+        returnedBytes: Buffer.byteLength(cut, 'utf8'),
+    };
+}
+function rpcTimeoutForWait(waitMs, globalTimeout) {
+    if (globalTimeout)
+        return globalTimeout;
+    return Math.max(exports.DEFAULT_RPC_TIMEOUT_MS, waitMs + 5_000);
+}
 exports.KEY_MAP = {
     'enter': '\r',
     'return': '\r',

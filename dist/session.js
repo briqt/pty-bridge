@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Session = void 0;
 exports.loadPty = loadPty;
 const headless_1 = require("@xterm/headless");
+const protocol_1 = require("./protocol");
 let ptyModule;
 async function loadPty() {
     try {
@@ -67,6 +68,9 @@ class Session {
     id;
     command;
     startedAt;
+    owner;
+    lastExecStartLine = 0;
+    lastExecStartRaw = 0;
     _lastActivityAt;
     pty;
     terminal;
@@ -78,9 +82,12 @@ class Session {
     lastReadLineAlt = 0;
     lastBufferType = 'normal';
     keepaliveTimer = null;
-    constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval) {
+    rawBuffer = '';
+    rawReadOffset = 0;
+    constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval, owner = '') {
         this.id = id;
         this.command = command;
+        this.owner = owner;
         this.cols = cols;
         this.rows = rows;
         this.startedAt = new Date().toISOString();
@@ -100,6 +107,7 @@ class Session {
             scrollback: 50000,
         });
         this.pty.onData((data) => {
+            this.appendRaw(data);
             this.terminal.write(data);
         });
         this.pty.onExit(({ exitCode }) => {
@@ -121,6 +129,16 @@ class Session {
     get isAlive() { return this._isAlive; }
     get exitCode() { return this._exitCode; }
     get lastActivityAt() { return this._lastActivityAt; }
+    get rawLength() { return this.rawBuffer.length; }
+    appendRaw(data) {
+        this.rawBuffer += data;
+        if (this.rawBuffer.length > protocol_1.RAW_BUFFER_CAP) {
+            const drop = this.rawBuffer.length - protocol_1.RAW_BUFFER_CAP;
+            this.rawBuffer = this.rawBuffer.slice(drop);
+            this.rawReadOffset = Math.max(0, this.rawReadOffset - drop);
+            this.lastExecStartRaw = Math.max(0, this.lastExecStartRaw - drop);
+        }
+    }
     write(data) {
         if (!this._isAlive)
             throw new Error('Session is not alive');
@@ -132,6 +150,10 @@ class Session {
         this.rows = rows;
         this.pty.resize(cols, rows);
         this.terminal.resize(cols, rows);
+    }
+    markExecStart() {
+        this.lastExecStartLine = this.lineCount();
+        this.lastExecStartRaw = this.rawBuffer.length;
     }
     getBuffer(which) {
         if (!which || which === 'active')
@@ -153,13 +175,13 @@ class Session {
     snapshot() {
         const buf = this.terminal.buffer.active;
         const startRow = buf.viewportY;
-        const lines = [];
+        const collected = [];
         for (let i = 0; i < this.rows; i++) {
             const line = buf.getLine(startRow + i);
-            lines.push(line ? line.translateToString(true) : '');
+            collected.push(line ? line.translateToString(true) : '');
         }
         return {
-            lines,
+            lines: collected,
             cursorX: buf.cursorX,
             cursorY: buf.cursorY,
             bufferType: buf.type,
@@ -167,15 +189,18 @@ class Session {
             rows: this.rows,
         };
     }
+    incrementalCursor(buffer) {
+        const buf = this.getBuffer(buffer);
+        const currentType = buf.type;
+        return currentType === 'normal' ? this.lastReadLineNormal : this.lastReadLineAlt;
+    }
     // Incremental read: returns lines from `since` to last content line, advances cursor.
     read(since, buffer) {
         this._lastActivityAt = new Date().toISOString();
         const buf = this.getBuffer(buffer);
         const currentType = buf.type;
-        // Dual cursor logic: only applies when reading from active buffer with no explicit `since`
         if ((!buffer || buffer === 'active') && since === undefined) {
             if (currentType !== this.lastBufferType) {
-                // Buffer switched — reset target buffer's cursor
                 if (currentType === 'normal')
                     this.lastReadLineNormal = 0;
                 else
@@ -200,7 +225,6 @@ class Session {
             const line = buf.getLine(i);
             lines.push(line ? line.translateToString(true) : '');
         }
-        // Update cursor only for incremental reads (no explicit since, active buffer)
         if (since === undefined && (!buffer || buffer === 'active')) {
             if (currentType === 'normal')
                 this.lastReadLineNormal = lastContentLine + 1;
@@ -209,7 +233,6 @@ class Session {
         }
         return lines.join('\n');
     }
-    // Read from a specific line without advancing the incremental cursor.
     readFrom(startLine, buffer) {
         const buf = this.getBuffer(buffer);
         const lastContentLine = this.findLastContentLine(buf);
@@ -222,9 +245,34 @@ class Session {
         }
         return lines.join('\n');
     }
-    // Full buffer read (no cursor side effects).
+    readLastLines(n, buffer) {
+        if (n <= 0)
+            return '';
+        const buf = this.getBuffer(buffer);
+        const last = this.findLastContentLine(buf);
+        if (last < 0)
+            return '';
+        return this.readFrom(Math.max(0, last - n + 1), buffer);
+    }
     readFull(buffer) {
         return this.readFrom(0, buffer);
+    }
+    readRaw(opts = {}) {
+        const len = this.rawBuffer.length;
+        let from = 0;
+        if (opts.fromLastExec)
+            from = this.lastExecStartRaw;
+        else if (opts.last != null)
+            from = Math.max(0, len - opts.last);
+        else if (opts.since != null)
+            from = Math.max(0, opts.since);
+        else
+            from = this.rawReadOffset;
+        const output = this.rawBuffer.slice(from);
+        if (opts.advance && opts.since == null && opts.last == null && !opts.fromLastExec) {
+            this.rawReadOffset = len;
+        }
+        return { output, startCursor: from, cursor: len };
     }
     lineCount() {
         return this.findLastContentLine() + 1;
@@ -241,6 +289,15 @@ class Session {
             this.pty.kill();
         this.terminal.dispose();
     }
+    persistMeta() {
+        return {
+            id: this.id,
+            command: this.command,
+            pid: this.pid,
+            owner: this.owner,
+            startedAt: this.startedAt,
+        };
+    }
     info() {
         const uptimeMs = Date.now() - new Date(this.startedAt).getTime();
         return {
@@ -256,6 +313,8 @@ class Session {
             exitCode: this._exitCode,
             uptime: formatUptime(uptimeMs),
             bufferType: this.terminal.buffer.active.type,
+            owner: this.owner,
+            lastExecStartLine: this.lastExecStartLine,
         };
     }
 }

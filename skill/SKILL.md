@@ -9,7 +9,7 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 
 ## Setup
 
-If `pty-bridge` is not available, install it from GitHub:
+If `pty-bridge` is not available, install it from GitHub (not the npm registry):
 
 ```bash
 npm i -g github:briqt/pty-bridge --install-links

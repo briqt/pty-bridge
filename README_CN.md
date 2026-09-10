@@ -4,7 +4,7 @@
 
 通过 CLI 管理交互式终端会话（SSH、REPL、数据库、TUI 应用），专为需要 PTY 能力的 AI Agent 设计。
 
-发布为 npm 包，通过 `@lydell/node-pty` 按平台自动选择预编译的原生二进制——无需编译，无需手动处理平台差异。
+从 GitHub 安装。`@lydell/node-pty` 会按平台自动选择预编译原生二进制——无需编译，无需手动处理平台差异。
 
 **[English](README.md)**
 
@@ -48,23 +48,17 @@
 
 ## 安装
 
-直接运行，无需安装：
-
 ```bash
-npx -y pty-bridge status
+npm i -g github:briqt/pty-bridge --install-links
 ```
 
-或全局安装：
-
-```bash
-npm i -g pty-bridge
-```
+必须带 `--install-links`，否则平台对应的 `@lydell/node-pty-*` 二进制不会被正确链接。
 
 要求：Node.js 18+。支持 macOS、Linux、Windows。
 
 ## 作为 Agent Skill 使用
 
-[`skill/SKILL.md`](skill/SKILL.md) 是一个 Agent skill 文件，为 Claude Code、Kiro CLI 等 Agent 提供 CLI 使用指南。它基于已发布的 npm 包（通过 `npx -y pty-bridge` 或全局二进制调用），不包含任何运行时。
+[`skill/SKILL.md`](skill/SKILL.md) 为 Claude Code、Cursor 等 Agent 提供 CLI 用法。它调用 PATH 上的 `pty-bridge` 二进制（即上面的 GitHub 全局安装），不内置运行时。
 
 ```bash
 npx skills add briqt/pty-bridge -g
@@ -106,19 +100,11 @@ daemon 在 5 分钟无活跃会话后自动退出。
 ```bash
 git clone https://github.com/briqt/pty-bridge.git
 cd pty-bridge
-npm install      # 安装依赖 + 开发依赖
-npm test         # tsc → dist/ 后跑 integration 测试
+npm install
+npm test
 ```
 
-编辑 `src/*.ts`，运行 `npm run build`，本地测试（如 `node dist/cli.js status`）。
-
-### 发布
-
-```bash
-npm publish      # prepublishOnly 会跑测试（含构建）；files: ["dist"] 只发布编译后的 JS
-```
-
-原生二进制不在仓库里——npm 通过 optional dependencies 按平台解析对应的 `@lydell/node-pty-<platform>` 包。
+编辑 `src/*.ts`，运行 `npm run build`，本地测试（`node dist/cli.js status`）。请提交 `dist/`——从 GitHub 安装用的是编译后的 JS，没有单独的发布步骤。
 
 ## License
 

@@ -4,29 +4,23 @@
 
 Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via a simple CLI. Designed for AI agents that need PTY support.
 
-Published as an npm package. The matching prebuilt native binary (via `@lydell/node-pty`) is selected automatically per platform — no compile step, no manual platform handling.
+Install from GitHub. The matching prebuilt native binary (via `@lydell/node-pty`) is selected automatically per platform — no compile step, no manual platform handling.
 
 **[中文文档](README_CN.md)**
 
 ## Install
 
-Run it directly with no install:
-
 ```bash
-npx -y pty-bridge status
+npm i -g github:briqt/pty-bridge --install-links
 ```
 
-Or install globally so the bare `pty-bridge` command is on PATH:
+`--install-links` is required so the platform-specific `@lydell/node-pty-*` binary is actually linked.
 
-```bash
-npm i -g pty-bridge
-```
-
-Requirements: Node.js 18+. Linux or macOS (Windows users: run inside WSL).
+Requirements: Node.js 18+. macOS, Linux, and Windows.
 
 ## Use as an agent skill
 
-The [`skill/SKILL.md`](skill/SKILL.md) file is a thin agent skill that documents the CLI for Claude Code, Kiro CLI, and other compatible agents. It rides on the published npm package (it invokes `npx -y pty-bridge` / the global binary) rather than vendoring any runtime.
+[`skill/SKILL.md`](skill/SKILL.md) documents the CLI for Claude Code, Cursor, and other compatible agents. It calls the `pty-bridge` binary from PATH (the GitHub global install above). It does not vendor a runtime.
 
 ```bash
 npx skills add briqt/pty-bridge -g
@@ -68,19 +62,11 @@ The daemon auto-exits after 5 minutes with no active sessions.
 ```bash
 git clone https://github.com/briqt/pty-bridge.git
 cd pty-bridge
-npm install      # installs deps + dev deps
-npm test         # tsc → dist/, then integration tests
+npm install
+npm test
 ```
 
-Edit `src/*.ts`, run `npm run build`, and test locally (e.g. `node dist/cli.js status`).
-
-### Publishing
-
-```bash
-npm publish      # prepublishOnly runs tests (and the build); files: ["dist"] ships only compiled JS
-```
-
-The native binaries are not vendored — npm resolves the correct `@lydell/node-pty-<platform>` package at install time via optional dependencies.
+Edit `src/*.ts`, run `npm run build`, and test locally (`node dist/cli.js status`). Commit `dist/` — GitHub installs use the compiled JS, not a publish step.
 
 ## License
 

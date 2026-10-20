@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.RpcTimeoutError = void 0;
 exports.request = request;
 exports.isRpcTimeout = isRpcTimeout;
+exports.inspectDaemon = inspectDaemon;
 const net = __importStar(require("net"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -158,4 +159,14 @@ async function request(method, params = {}, timeoutMs) {
 }
 function isRpcTimeout(err) {
     return err instanceof RpcTimeoutError || (err instanceof Error && err.name === 'RpcTimeoutError');
+}
+/** Probe an existing daemon only: doctor must not start or replace sessions. */
+async function inspectDaemon() {
+    try {
+        const response = await sendRequest('status', {}, 2000);
+        return response.error ? { error: response.error } : response.result;
+    }
+    catch {
+        return null;
+    }
 }

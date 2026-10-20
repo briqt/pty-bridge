@@ -37,6 +37,7 @@ exports.Session = void 0;
 exports.loadPty = loadPty;
 const headless_1 = require("@xterm/headless");
 const protocol_1 = require("./protocol");
+const output_1 = require("./output");
 let ptyModule;
 async function loadPty() {
     try {
@@ -82,8 +83,8 @@ class Session {
     lastReadLineAlt = 0;
     lastBufferType = 'normal';
     keepaliveTimer = null;
-    rawBuffer = '';
-    rawReadOffset = 0;
+    rawOutput = new output_1.RawOutputBuffer(protocol_1.RAW_BUFFER_CAP);
+    readColumns = { normal: 0, alternate: 0 };
     constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval, owner = '') {
         this.id = id;
         this.command = command;
@@ -129,16 +130,8 @@ class Session {
     get isAlive() { return this._isAlive; }
     get exitCode() { return this._exitCode; }
     get lastActivityAt() { return this._lastActivityAt; }
-    get rawLength() { return this.rawBuffer.length; }
-    appendRaw(data) {
-        this.rawBuffer += data;
-        if (this.rawBuffer.length > protocol_1.RAW_BUFFER_CAP) {
-            const drop = this.rawBuffer.length - protocol_1.RAW_BUFFER_CAP;
-            this.rawBuffer = this.rawBuffer.slice(drop);
-            this.rawReadOffset = Math.max(0, this.rawReadOffset - drop);
-            this.lastExecStartRaw = Math.max(0, this.lastExecStartRaw - drop);
-        }
-    }
+    get rawLength() { return this.rawOutput.end; }
+    appendRaw(data) { this.rawOutput.append(data); }
     write(data) {
         if (!this._isAlive)
             throw new Error('Session is not alive');
@@ -153,7 +146,7 @@ class Session {
     }
     markExecStart() {
         this.lastExecStartLine = this.lineCount();
-        this.lastExecStartRaw = this.rawBuffer.length;
+        this.lastExecStartRaw = this.rawOutput.end;
     }
     getBuffer(which) {
         if (!which || which === 'active')
@@ -258,21 +251,40 @@ class Session {
         return this.readFrom(0, buffer);
     }
     readRaw(opts = {}) {
-        const len = this.rawBuffer.length;
-        let from = 0;
-        if (opts.fromLastExec)
-            from = this.lastExecStartRaw;
-        else if (opts.last != null)
-            from = Math.max(0, len - opts.last);
-        else if (opts.since != null)
-            from = Math.max(0, opts.since);
-        else
-            from = this.rawReadOffset;
-        const output = this.rawBuffer.slice(from);
-        if (opts.advance && opts.since == null && opts.last == null && !opts.fromLastExec) {
-            this.rawReadOffset = len;
+        return this.rawOutput.read({
+            ...opts,
+            since: opts.fromLastExec ? this.lastExecStartRaw : opts.since,
+        });
+    }
+    readRendered(opts = {}) {
+        const buf = this.getBuffer(opts.buffer);
+        const type = buf.type;
+        const incremental = opts.since == null && opts.last == null && !opts.fromLastExec;
+        if (incremental && type !== this.lastBufferType) {
+            if (type === 'normal')
+                this.lastReadLineNormal = 0;
+            else
+                this.lastReadLineAlt = 0;
+            this.readColumns[type] = 0;
+            this.lastBufferType = type;
         }
-        return { output, startCursor: from, cursor: len };
+        const end = this.findLastContentLine(buf) + 1;
+        const start = opts.fromLastExec ? this.lastExecStartLine
+            : opts.last != null ? Math.max(0, end - opts.last)
+                : opts.since ?? this.incrementalCursor(opts.buffer);
+        const column = opts.column ?? (incremental ? this.readColumns[type] : 0);
+        const text = Buffer.from(this.readFrom(start, opts.buffer), 'utf8').subarray(column).toString('utf8');
+        const chunk = (0, protocol_1.truncateUtf8)(text, opts.maxBytes ?? protocol_1.DEFAULT_MAX_BYTES);
+        const cursor = chunk.truncated ? (0, output_1.renderedCursor)(start, chunk.output, column) : end;
+        if (incremental) {
+            const [line, col = '0'] = String(cursor).split(':');
+            if (type === 'normal')
+                this.lastReadLineNormal = Number(line);
+            else
+                this.lastReadLineAlt = Number(line);
+            this.readColumns[type] = Number(col);
+        }
+        return { ...chunk, startCursor: column ? `${start}:${column}` : start, cursor };
     }
     lineCount() {
         return this.findLastContentLine() + 1;

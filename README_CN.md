@@ -113,3 +113,34 @@ MIT
 ## 社区
 
 分享于 [LINUX DO](https://linux.do/)
+
+
+## 1.5.0 diagnostics and reliable continuation
+
+```bash
+npm i -g github:briqt/pty-bridge --install-links
+npx skills add briqt/pty-bridge -g -y
+pty-bridge --version
+pty-bridge doctor --json
+```
+
+Raw cursors are absolute UTF-8 byte offsets; bounded reads preserve every returned
+byte and report eviction through `lostBytes`. Rendered cursors may include a byte
+column (`line:column`). Pass the returned cursor unchanged to `read --from`.
+Subcommand help, `start --json`, and `list --owner NAME --alive-only --json` are supported.
+Keep both the session id and owner across agent tool calls. A CLI update preserves
+active daemons/sessions; doctor exposes the running daemon version separately.
+
+
+### Dependency review (2026-10-20)
+
+- `@xterm/headless` 6.0.0 and TypeScript 7.0.2 are already the latest stable releases.
+- Upgrade `@types/node` to stable 26.6.5; compiled runtime targets remain ES2022.
+- Keep `@lydell/node-pty` exactly at npm's current latest 1.2.0-beta.15. This is an
+  intentional exception to the stable-only preference: the maintainer explains
+  that the older stable-labelled 1.1.0 was based on node-pty 1.1.0-beta14, and that
+  the later 1.2 beta repackaging fixed problems in the official 1.1.0 prebuilds.
+  Do not downgrade based only on the absence of a beta suffix. The pinned package
+  ships matching prebuilt binaries for Linux/macOS/Windows, x64/arm64.
+
+Source: [maintainer's versioning explanation](https://github.com/lydell/node-pty/releases/tag/v1.2.0-beta.3).

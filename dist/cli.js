@@ -1,27 +1,111 @@
 #!/usr/bin/env node
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("./client");
 const protocol_1 = require("./protocol");
+const session_1 = require("./session");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const VERSION = require('../package.json').version;
+const protocol_2 = require("./protocol");
 const args = process.argv.slice(2);
 let globalTimeout;
-const timeoutIdx = args.indexOf('--timeout');
-if (timeoutIdx !== -1 && args[0] !== 'wait-for') {
-    const beforeCommand = timeoutIdx === 0;
-    if (beforeCommand) {
-        globalTimeout = parseInt(args[timeoutIdx + 1], 10);
-        if (isNaN(globalTimeout) || globalTimeout <= 0) {
-            console.error('Error: --timeout must be a positive integer (milliseconds)');
-            process.exit(1);
-        }
-        args.splice(timeoutIdx, 2);
-    }
-    else {
-        console.error('Error: --timeout must appear before the subcommand, e.g. pty-bridge --timeout 60000 exec <id> "cmd". For exec wait budget use --wait <ms>. For wait-for, use --timeout <seconds> as a subcommand flag.');
-        process.exit(1);
-    }
+let globalOwner;
+function fail(message) { console.error(`Error: ${message}`); process.exit(1); }
+function positive(value, name) {
+    if (!value || !/^\d+$/.test(value) || Number(value) <= 0)
+        fail(`${name} requires a positive integer`);
+    return Number(value);
+}
+// Global options work before the subcommand; subcommand parsers keep child arguments intact.
+while (['--timeout', '--rpc-timeout-ms', '--owner'].includes(args[0])) {
+    const flag = args.shift();
+    const value = args.shift();
+    if (!value || value.startsWith('--'))
+        fail(`${flag} requires a value`);
+    if (flag === '--owner')
+        globalOwner = value;
+    else
+        globalTimeout = positive(value, flag);
 }
 const command = args[0];
+if (command && !['start', '--help', '-h'].includes(command)) {
+    for (const flag of ['--rpc-timeout-ms', ...(command === 'wait-for' ? [] : ['--timeout'])]) {
+        const parsed = parseFlag(args, flag);
+        if (parsed.value !== undefined) {
+            globalTimeout = positive(parsed.value, flag);
+            args.splice(0, args.length, ...parsed.rest);
+        }
+    }
+    // Accept options before the session id as well as after it.
+    if (['read', 'exec', 'write', 'sendkey', 'snapshot', 'kill', 'resize', 'wait-for'].includes(command)) {
+        const prefix = [];
+        const values = new Set(['--owner', '--wait', '--wait-for-idle', '--max-bytes', '--from', '--last', '--lines', '--buffer', '--timeout']);
+        while (args[1]?.startsWith('-') && !['--help', '-h'].includes(args[1])) {
+            const flag = args.splice(1, 1)[0];
+            prefix.push(flag);
+            if (values.has(flag)) {
+                if (!args[1] || args[1].startsWith('--'))
+                    fail(`${flag} requires a value`);
+                prefix.push(args.splice(1, 1)[0]);
+            }
+        }
+        if (prefix.length)
+            args.push(...prefix);
+    }
+}
+function dependencyVersion(name) {
+    try {
+        let directory = path.dirname(require.resolve(name));
+        for (let i = 0; i < 8; i++) {
+            const manifest = path.join(directory, 'package.json');
+            if (fs.existsSync(manifest)) {
+                const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+                if (pkg.name === name)
+                    return pkg.version;
+            }
+            const parent = path.dirname(directory);
+            if (parent === directory)
+                break;
+            directory = parent;
+        }
+    }
+    catch { }
+    return null;
+}
 function usage() {
     console.log(`pty-bridge — manage interactive terminal sessions
 
@@ -39,6 +123,15 @@ Usage:
   pty-bridge kill <id>                                Terminate a session
   pty-bridge resize <id> <cols> <rows>                Resize terminal
   pty-bridge status                                   Show daemon status
+  pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
+  pty-bridge --version                                CLI version
+
+Global options:
+  --rpc-timeout-ms <n>  RPC timeout in ms (before or after subcommand)
+  --owner <name>        Caller identity (also accepted on each mutation)
+  --help                Works on subcommands too
+  start --json          Return sessionId and owner as JSON
+  list --json --owner <name> --alive-only              Filter sessions
 
 Start options:
   --keepalive <secs>   Send keepalive to PTY every N seconds
@@ -48,11 +141,11 @@ Start options:
 
 Read options:
   --full               Entire buffer (does not advance incremental cursor)
-  --from <n>           From line n (does not advance cursor)
+  --from <n[:byte]>    From a rendered line/byte-column, or a raw byte offset
   --from-exec          From last exec start (resume after timeout)
   --last <n>, --lines <n>
                        Last n lines (does not advance cursor)
-  --raw                Unwrapped PTY byte stream (skips xterm wrapping)
+  --raw                Unwrapped UTF-8 stream; cursor/--from are absolute byte offsets
   --max-bytes <n>      Truncate (default 256000; 0 = unlimited)
   --buffer <type>      active (default), normal, or alternate
 
@@ -71,7 +164,7 @@ Wait-for options:
   --timeout <s>        Seconds to wait (default: 30)
   --from <n>           Search from line n (default: last 200 lines + new output)
   --from-now           Only match output that appears after this call`);
-    const isHelp = command === '--help' || command === '-h';
+    const isHelp = args.includes('--help') || args.includes('-h');
     process.exit(isHelp || !command ? 0 : 1);
 }
 async function readStdin() {
@@ -88,6 +181,8 @@ function parseFlag(argList, flag) {
     if (idx === -1)
         return { value: undefined, rest: argList };
     const value = argList[idx + 1];
+    if (value === undefined || value.startsWith('--'))
+        fail(`${flag} requires a value`);
     const rest = argList.filter((_, i) => i !== idx && i !== idx + 1);
     return { value, rest };
 }
@@ -105,7 +200,7 @@ function rejectUnknownFlags(rest, context) {
 function parseOwnerForce(argList) {
     const o = parseFlag(argList, '--owner');
     const f = parseBoolFlag(o.rest, '--force');
-    return { owner: o.value || (0, protocol_1.defaultOwner)(), force: f.present, rest: f.rest };
+    return { owner: o.value || globalOwner || (0, protocol_2.defaultOwner)(), force: f.present, rest: f.rest };
 }
 function writeMeta(fields) {
     const parts = Object.entries(fields)
@@ -139,7 +234,12 @@ async function peekAfterTimeout(sessionId) {
     }
 }
 async function main() {
-    if (!command || command === '--help' || command === '-h')
+    if (command === '--version' || command === '-V') {
+        console.log(VERSION);
+        return;
+    }
+    const wantsHelp = command === 'start' ? ['--help', '-h'].includes(args[1]) : args.slice(1).some(a => a === '--help' || a === '-h');
+    if (!command || command === '--help' || command === '-h' || wantsHelp)
         usage();
     try {
         switch (command) {
@@ -150,6 +250,8 @@ async function main() {
                     usage();
                 }
                 let cmdArgs = args.slice(2);
+                const json = parseBoolFlag(cmdArgs, '--json');
+                cmdArgs = json.rest;
                 const ka = parseFlag(cmdArgs, '--keepalive');
                 cmdArgs = ka.rest;
                 const w = parseFlag(cmdArgs, '--wait');
@@ -164,7 +266,7 @@ async function main() {
                 const wait = w.value ? parseInt(w.value, 10) : undefined;
                 const cols = colsFlag.value ? parseInt(colsFlag.value, 10) : 120;
                 const rows = rowsFlag.value ? parseInt(rowsFlag.value, 10) : 40;
-                const owner = ownerFlag.value || (0, protocol_1.defaultOwner)();
+                const owner = ownerFlag.value || globalOwner || (0, protocol_2.defaultOwner)();
                 const result = await (0, client_1.request)('start', {
                     command: cmd,
                     args: cmdArgs,
@@ -175,9 +277,13 @@ async function main() {
                     ...(keepaliveInterval ? { keepaliveInterval } : {}),
                     ...(wait !== undefined && !isNaN(wait) ? { wait } : {}),
                 }, globalTimeout);
-                console.log(`Session: ${result.sessionId} owner=${result.owner || owner}`);
-                if (result.output)
-                    console.log(result.output);
+                if (json.present)
+                    console.log(JSON.stringify(result));
+                else {
+                    console.log(`Session: ${result.sessionId} owner=${result.owner || owner}`);
+                    if (result.output)
+                        console.log(result.output);
+                }
                 break;
             }
             case 'read': {
@@ -206,7 +312,9 @@ async function main() {
                 rejectUnknownFlags(readArgs, 'read');
                 const lastRaw = lastFlag.value ?? linesFlag.value;
                 const last = lastRaw ? parseInt(lastRaw, 10) : undefined;
-                const from = fromFlag.value ? parseInt(fromFlag.value, 10) : undefined;
+                const fromParts = fromFlag.value?.split(':');
+                const from = fromParts ? Number(fromParts[0]) : undefined;
+                const column = fromParts?.[1] !== undefined ? Number(fromParts[1]) : undefined;
                 const maxBytes = maxFlag.value ? parseInt(maxFlag.value, 10) : undefined;
                 const buf = bufFlag.value;
                 const exclusive = [full.present, from !== undefined, last !== undefined, fromExec.present].filter(Boolean).length;
@@ -218,8 +326,8 @@ async function main() {
                     console.error('Error: --last/--lines must be a non-negative integer');
                     process.exit(1);
                 }
-                if (fromFlag.value !== undefined && (from === undefined || isNaN(from) || from < 0)) {
-                    console.error('Error: --from must be a non-negative integer');
+                if (fromFlag.value !== undefined && (!/^\d+(?::\d+)?$/.test(fromFlag.value) || from === undefined || !Number.isSafeInteger(from) || (column !== undefined && !Number.isSafeInteger(column)))) {
+                    console.error('Error: --from must be a non-negative line[:byte-column] or raw byte offset');
                     process.exit(1);
                 }
                 const params = { sessionId: id };
@@ -227,6 +335,11 @@ async function main() {
                     params.since = 0;
                 if (from !== undefined)
                     params.since = from;
+                if (column !== undefined) {
+                    if (raw.present)
+                        fail('raw --from must be a byte offset without a column');
+                    params.column = column;
+                }
                 if (last !== undefined)
                     params.last = last;
                 if (fromExec.present)
@@ -243,8 +356,12 @@ async function main() {
                     params.maxBytes = maxBytes;
                 }
                 const result = await (0, client_1.request)('read', params, globalTimeout);
-                if (result.output)
-                    console.log(result.output);
+                if (result.output) {
+                    if (raw.present)
+                        process.stdout.write(result.output);
+                    else
+                        console.log(result.output);
+                }
                 writeMeta({
                     lines: result.totalLines,
                     alive: result.isAlive,
@@ -255,6 +372,7 @@ async function main() {
                     totalBytes: result.totalBytes,
                     returnedBytes: result.returnedBytes,
                     raw: result.raw,
+                    lostBytes: result.lostBytes,
                     exitCode: result.exitCode,
                 });
                 break;
@@ -340,7 +458,7 @@ async function main() {
                     }
                     params.maxBytes = maxBytes;
                 }
-                const socketTimeout = (0, protocol_1.rpcTimeoutForWait)(waitMs, globalTimeout);
+                const socketTimeout = (0, protocol_2.rpcTimeoutForWait)(waitMs, globalTimeout);
                 try {
                     const result = await (0, client_1.request)('exec', params, socketTimeout);
                     printExecResult(result);
@@ -402,7 +520,7 @@ async function main() {
                     process.exit(1);
                 }
                 const timeoutMs = timeoutSec * 1000;
-                const socketTimeout = (0, protocol_1.rpcTimeoutForWait)(timeoutMs, globalTimeout);
+                const socketTimeout = (0, protocol_2.rpcTimeoutForWait)(timeoutMs, globalTimeout);
                 const result = await (0, client_1.request)('waitFor', {
                     sessionId: id,
                     pattern,
@@ -425,15 +543,25 @@ async function main() {
                     console.error('Error: session id required');
                     usage();
                 }
-                rejectUnknownFlags(args.slice(2), 'snapshot');
+                rejectUnknownFlags(parseOwnerForce(args.slice(2)).rest, 'snapshot');
                 const result = await (0, client_1.request)('snapshot', { sessionId: id }, globalTimeout);
                 console.log(`[buffer=${result.bufferType}  cursor=${result.cursorX},${result.cursorY}  size=${result.cols}x${result.rows}]`);
                 console.log(result.lines.join('\n'));
                 break;
             }
             case 'list': {
-                rejectUnknownFlags(args.slice(1), 'list');
+                const filterOwner = parseFlag(args.slice(1), '--owner');
+                const json = parseBoolFlag(filterOwner.rest, '--json');
+                const alive = parseBoolFlag(json.rest, '--alive-only');
+                rejectUnknownFlags(alive.rest, 'list');
                 const result = await (0, client_1.request)('list', {}, globalTimeout);
+                const owner = filterOwner.value || globalOwner;
+                result.sessions = result.sessions.filter(s => (!owner || s.owner === owner) && (!alive.present || s.isAlive));
+                result.lostSessions = (result.lostSessions || []).filter(s => !alive.present && (!owner || s.owner === owner));
+                if (json.present) {
+                    console.log(JSON.stringify(result));
+                    break;
+                }
                 if (result.lostCount && result.lostCount > 0) {
                     console.error(`Warning: daemon restarted at ${result.lastRestartAt ?? 'unknown'}, ${result.lostCount} session(s) lost`);
                 }
@@ -477,6 +605,26 @@ async function main() {
                 }
                 await (0, client_1.request)('resize', { sessionId: id, cols, rows, owner: parsed.owner, force: parsed.force }, globalTimeout);
                 console.log(`Session ${id} resized to ${cols}x${rows}`);
+                break;
+            }
+            case 'doctor': {
+                const json = parseBoolFlag(args.slice(1), '--json');
+                rejectUnknownFlags(json.rest, 'doctor');
+                let nativePty = true;
+                let nativeError;
+                try {
+                    await (0, session_1.loadPty)();
+                }
+                catch (err) {
+                    nativePty = false;
+                    nativeError = String(err);
+                }
+                const daemon = await (0, client_1.inspectDaemon)();
+                const dependencyVersions = Object.fromEntries(['@lydell/node-pty', '@xterm/headless'].map(name => [name, dependencyVersion(name)]));
+                const result = { version: VERSION, dependencyVersions, cliPath: __filename, node: process.version, nodePath: process.execPath, socket: (0, protocol_1.getSocketPath)(), owner: globalOwner || (0, protocol_2.defaultOwner)(), nativePty, nativeError, daemon, capabilities: ['absolute-raw-byte-cursors', 'rendered-column-cursors', 'owner-guard', 'wait-exit'] };
+                console.log(json.present ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+                if (!nativePty)
+                    process.exitCode = 1;
                 break;
             }
             case 'status': {

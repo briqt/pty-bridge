@@ -2,6 +2,8 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { Session, loadPty } from './session';
+import { renderedCursor } from './output';
+const VERSION: string = require('../package.json').version;
 import {
   getSocketPath,
   getStatePath,
@@ -133,7 +135,7 @@ function assertOwner(session: Session, auth: AuthParams | undefined, action: str
   const caller = auth?.owner || '';
   if (session.owner !== caller) {
     throw new Error(
-      `Session ${session.id} is owned by '${session.owner}', caller is '${caller || 'unset'}'. Pass --force to ${action} anyway.`,
+      `Session ${session.id} is owned by '${session.owner}', caller is '${caller || 'unset'}'. Use --owner '${session.owner}' only for your own session; --force requires an explicit takeover.`,
     );
   }
 }
@@ -153,10 +155,6 @@ function wrapOutput(output: string, maxBytes: number, extra: Record<string, unkn
   };
 }
 
-function cursorAfter(startCursor: number, output: string): number {
-  if (!output) return startCursor;
-  return startCursor + output.split('\n').length;
-}
 
 async function waitForMatch(
   session: Session,
@@ -243,49 +241,12 @@ async function dispatch(req: Request): Promise<unknown> {
       const mb = maxBytesOf(p.maxBytes);
       if (p.raw) {
         const advance = p.since == null && p.last == null && !p.fromLastExec;
-        const raw = session.readRaw({
-          since: p.since,
-          last: p.last,
-          fromLastExec: p.fromLastExec,
-          advance,
-        });
-        return wrapOutput(raw.output, mb, {
-          isAlive: session.isAlive,
-          exitCode: session.exitCode,
-          totalLines: session.bufferLineCount(),
-          bufferType: session.activeBufferType(),
-          startCursor: raw.startCursor,
-          cursor: raw.cursor,
-          raw: true,
-        });
+        const raw = session.readRaw({ since: p.since, last: p.last, fromLastExec: p.fromLastExec, advance, maxBytes: mb });
+        return { ...raw, isAlive: session.isAlive, exitCode: session.exitCode,
+          totalLines: session.bufferLineCount(), bufferType: session.activeBufferType(), raw: true };
       }
-      let startCursor = 0;
-      let output: string;
-      if (p.fromLastExec) {
-        startCursor = session.lastExecStartLine;
-        output = session.readFrom(startCursor, p.buffer);
-      } else if (p.last != null) {
-        output = session.readLastLines(p.last, p.buffer);
-        startCursor = Math.max(0, session.lineCount() - p.last);
-      } else if (p.since != null) {
-        startCursor = p.since;
-        output = session.readFrom(p.since, p.buffer);
-      } else {
-        startCursor = session.incrementalCursor(p.buffer);
-        output = session.read(undefined, p.buffer);
-      }
-      const trunc = wrapOutput(output, mb);
-      const nextCursor = trunc.truncated ? cursorAfter(startCursor, trunc.output) : session.lineCount();
-      return {
-        ...trunc,
-        isAlive: session.isAlive,
-        exitCode: session.exitCode,
-        totalLines: session.bufferLineCount(),
-        bufferType: session.activeBufferType(),
-        startCursor,
-        cursor: nextCursor,
-        raw: false,
-      };
+      return { ...session.readRendered({ ...p, maxBytes: mb }), isAlive: session.isAlive,
+        exitCode: session.exitCode, totalLines: session.bufferLineCount(), bufferType: session.activeBufferType(), raw: false };
     }
     case 'write': {
       const p = req.params as unknown as WriteParams;
@@ -330,7 +291,7 @@ async function dispatch(req: Request): Promise<unknown> {
           isAlive: session.isAlive,
           exitCode: waited.matched ? stripped.exitCode : session.exitCode,
           startCursor: startLine,
-          cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+          cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
         };
       }
       session.write(p.command + '\r');
@@ -364,7 +325,7 @@ async function dispatch(req: Request): Promise<unknown> {
         isAlive: session.isAlive,
         exitCode: session.exitCode,
         startCursor: startLine,
-        cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+        cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
       };
     }
     case 'peekExec': {
@@ -379,7 +340,7 @@ async function dispatch(req: Request): Promise<unknown> {
         isAlive: session.isAlive,
         exitCode: session.exitCode,
         startCursor: startLine,
-        cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+        cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
       };
     }
     case 'waitFor': {
@@ -440,6 +401,7 @@ async function dispatch(req: Request): Promise<unknown> {
     case 'status': {
       const alive = Array.from(sessions.values()).filter(s => s.isAlive).length;
       return {
+        version: VERSION,
         daemonStartedAt,
         pid: process.pid,
         activeSessions: alive,

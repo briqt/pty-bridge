@@ -123,3 +123,11 @@ export async function request(method: string, params: Record<string, unknown> = 
 export function isRpcTimeout(err: unknown): boolean {
   return err instanceof RpcTimeoutError || (err instanceof Error && err.name === 'RpcTimeoutError');
 }
+
+/** Probe an existing daemon only: doctor must not start or replace sessions. */
+export async function inspectDaemon(): Promise<unknown> {
+  try {
+    const response = await sendRequest('status', {}, 2000);
+    return response.error ? { error: response.error } : response.result;
+  } catch { return null; }
+}

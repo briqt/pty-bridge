@@ -83,18 +83,57 @@ cleanup();
 
 {
   const r = run(['exec', 'deadbeef', 'echo hi', '--timeout', '1000']);
-  check('misplaced --timeout on exec errors', r.status !== 0 && /must appear before the subcommand/.test(r.stderr), r.stderr);
+  check('trailing RPC timeout is accepted before session lookup', /Session not found/.test(r.stderr), r.stderr);
 }
 
 {
   const r = run(['status', '--timeout', '5000']);
-  check('misplaced --timeout before handled globally only at argv0', r.status !== 0 && /must appear before the subcommand/.test(r.stderr), r.stderr);
+  check('status accepts a trailing RPC timeout', r.status === 0 && /Daemon PID/.test(r.stdout), r.stderr);
 }
 
 const id = startBash();
 if (!id) {
   console.error('cannot continue without a session');
   process.exit(1);
+}
+
+// --- subcommand discovery, owner identity and machine-readable start
+{
+  for (const cmd of ['read', 'exec', 'snapshot', 'list', 'start', 'doctor']) {
+    const help = run([cmd, '--help']);
+    check(`${cmd} --help succeeds`, help.status === 0 && /Usage:/.test(help.stdout), help.stderr);
+  }
+  const started = run(['--owner', 'json-owner', 'start', 'bash', '--norc', '--noprofile', '--json', '--wait', '300']);
+  let data; try { data = JSON.parse(started.stdout); } catch {}
+  check('global owner and start --json', !!data?.sessionId && data.owner === 'json-owner', started.stdout + started.stderr);
+  if (data?.sessionId) {
+    const listed = run(['list', '--owner', 'json-owner', '--alive-only', '--json']);
+    const list = JSON.parse(listed.stdout);
+    check('list filters owner and live sessions', list.sessions.length === 1 && list.sessions[0].id === data.sessionId, listed.stdout);
+    const exec = run(['--owner', 'json-owner', 'exec', '--wait', '300', data.sessionId, 'echo owner-ok']);
+    check('options before session id are accepted', exec.status === 0 && /owner-ok/.test(exec.stdout), exec.stdout + exec.stderr);
+    run(['kill', data.sessionId, '--owner', 'json-owner']);
+  }
+  const doctor = run(['doctor', '--json']);
+  const report = JSON.parse(doctor.stdout);
+  check('doctor includes CLI and daemon versions', report.version === '1.5.0' && report.daemon?.version === '1.5.0' && report.nativePty, doctor.stdout);
+}
+
+// --- raw CLI pagination preserves exact bytes, including CRLF and emoji
+{
+  const payload = 'abc中文🙂' + 'q'.repeat(300) + '\nend';
+  const started = run(['start', process.execPath, '-e', `process.stdout.write(${JSON.stringify(payload)})`, '--wait', '600']);
+  const sid = sessionId(started.stdout);
+  let cursor = 0, collected = '';
+  for (let i = 0; sid && i < 200; i++) {
+    const chunk = run(['read', sid, '--raw', '--from', String(cursor), '--max-bytes', '7']);
+    if (chunk.status !== 0) break;
+    collected += chunk.stdout;
+    cursor = Number((meta(chunk.stderr).match(/cursor=(\d+)/) || [])[1]);
+    if (!/truncated=true/.test(chunk.stderr)) break;
+  }
+  check('raw CLI exact continuation has no missing or added bytes', collected === payload.replace(/\n/g, '\r\n'), JSON.stringify(collected));
+  if (sid) run(['kill', sid]);
 }
 
 // --- wait-exit

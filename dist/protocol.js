@@ -41,20 +41,14 @@ function truncateUtf8(text, maxBytes) {
     if (maxBytes <= 0 || totalBytes <= maxBytes) {
         return { output: text, truncated: false, totalBytes, returnedBytes: totalBytes };
     }
-    let end = Math.min(text.length, maxBytes);
-    while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes) {
+    const bytes = Buffer.from(text, 'utf8');
+    let end = Math.min(bytes.length, maxBytes);
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80)
         end--;
-    }
-    let cut = text.slice(0, end);
-    const nl = cut.lastIndexOf('\n');
-    if (nl > 0)
-        cut = cut.slice(0, nl);
-    return {
-        output: cut,
-        truncated: true,
-        totalBytes,
-        returnedBytes: Buffer.byteLength(cut, 'utf8'),
-    };
+    if (end === 0)
+        throw new Error('max-bytes is too small for the next UTF-8 character; increase it (at least 4 bytes handles any character)');
+    const output = bytes.subarray(0, end).toString('utf8');
+    return { output, truncated: true, totalBytes, returnedBytes: end };
 }
 function rpcTimeoutForWait(waitMs, globalTimeout) {
     if (globalTimeout)

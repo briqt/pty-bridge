@@ -37,6 +37,8 @@ const net = __importStar(require("net"));
 const fs = __importStar(require("fs"));
 const crypto = __importStar(require("crypto"));
 const session_1 = require("./session");
+const output_1 = require("./output");
+const VERSION = require('../package.json').version;
 const protocol_1 = require("./protocol");
 const sessions = new Map();
 let idleTimer = null;
@@ -146,7 +148,7 @@ function assertOwner(session, auth, action) {
         return;
     const caller = auth?.owner || '';
     if (session.owner !== caller) {
-        throw new Error(`Session ${session.id} is owned by '${session.owner}', caller is '${caller || 'unset'}'. Pass --force to ${action} anyway.`);
+        throw new Error(`Session ${session.id} is owned by '${session.owner}', caller is '${caller || 'unset'}'. Use --owner '${session.owner}' only for your own session; --force requires an explicit takeover.`);
     }
 }
 function maxBytesOf(value) {
@@ -161,11 +163,6 @@ function wrapOutput(output, maxBytes, extra = {}) {
         returnedBytes: trunc.returnedBytes,
         ...extra,
     };
-}
-function cursorAfter(startCursor, output) {
-    if (!output)
-        return startCursor;
-    return startCursor + output.split('\n').length;
 }
 async function waitForMatch(session, startLine, matches, timeoutMs) {
     const existing = session.readFrom(startLine);
@@ -240,52 +237,12 @@ async function dispatch(req) {
             const mb = maxBytesOf(p.maxBytes);
             if (p.raw) {
                 const advance = p.since == null && p.last == null && !p.fromLastExec;
-                const raw = session.readRaw({
-                    since: p.since,
-                    last: p.last,
-                    fromLastExec: p.fromLastExec,
-                    advance,
-                });
-                return wrapOutput(raw.output, mb, {
-                    isAlive: session.isAlive,
-                    exitCode: session.exitCode,
-                    totalLines: session.bufferLineCount(),
-                    bufferType: session.activeBufferType(),
-                    startCursor: raw.startCursor,
-                    cursor: raw.cursor,
-                    raw: true,
-                });
+                const raw = session.readRaw({ since: p.since, last: p.last, fromLastExec: p.fromLastExec, advance, maxBytes: mb });
+                return { ...raw, isAlive: session.isAlive, exitCode: session.exitCode,
+                    totalLines: session.bufferLineCount(), bufferType: session.activeBufferType(), raw: true };
             }
-            let startCursor = 0;
-            let output;
-            if (p.fromLastExec) {
-                startCursor = session.lastExecStartLine;
-                output = session.readFrom(startCursor, p.buffer);
-            }
-            else if (p.last != null) {
-                output = session.readLastLines(p.last, p.buffer);
-                startCursor = Math.max(0, session.lineCount() - p.last);
-            }
-            else if (p.since != null) {
-                startCursor = p.since;
-                output = session.readFrom(p.since, p.buffer);
-            }
-            else {
-                startCursor = session.incrementalCursor(p.buffer);
-                output = session.read(undefined, p.buffer);
-            }
-            const trunc = wrapOutput(output, mb);
-            const nextCursor = trunc.truncated ? cursorAfter(startCursor, trunc.output) : session.lineCount();
-            return {
-                ...trunc,
-                isAlive: session.isAlive,
-                exitCode: session.exitCode,
-                totalLines: session.bufferLineCount(),
-                bufferType: session.activeBufferType(),
-                startCursor,
-                cursor: nextCursor,
-                raw: false,
-            };
+            return { ...session.readRendered({ ...p, maxBytes: mb }), isAlive: session.isAlive,
+                exitCode: session.exitCode, totalLines: session.bufferLineCount(), bufferType: session.activeBufferType(), raw: false };
         }
         case 'write': {
             const p = req.params;
@@ -333,7 +290,7 @@ async function dispatch(req) {
                     isAlive: session.isAlive,
                     exitCode: waited.matched ? stripped.exitCode : session.exitCode,
                     startCursor: startLine,
-                    cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+                    cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
                 };
             }
             session.write(p.command + '\r');
@@ -376,7 +333,7 @@ async function dispatch(req) {
                 isAlive: session.isAlive,
                 exitCode: session.exitCode,
                 startCursor: startLine,
-                cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+                cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
             };
         }
         case 'peekExec': {
@@ -391,7 +348,7 @@ async function dispatch(req) {
                 isAlive: session.isAlive,
                 exitCode: session.exitCode,
                 startCursor: startLine,
-                cursor: trunc.truncated ? cursorAfter(startLine, trunc.output) : session.lineCount(),
+                cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
             };
         }
         case 'waitFor': {
@@ -455,6 +412,7 @@ async function dispatch(req) {
         case 'status': {
             const alive = Array.from(sessions.values()).filter(s => s.isAlive).length;
             return {
+                version: VERSION,
                 daemonStartedAt,
                 pid: process.pid,
                 activeSessions: alive,

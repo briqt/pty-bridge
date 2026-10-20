@@ -1,6 +1,7 @@
 import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { StringDecoder } from 'string_decoder';
 import { Session, loadPty } from './session';
 import { renderedCursor } from './output';
 const VERSION: string = require('../package.json').version;
@@ -426,8 +427,9 @@ async function main(): Promise<void> {
 
   const server = net.createServer((conn) => {
     let buffer = '';
+    const decoder = new StringDecoder('utf8');
     conn.on('data', (chunk) => {
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       let idx: number;
       while ((idx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, idx);

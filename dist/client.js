@@ -42,6 +42,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const crypto = __importStar(require("crypto"));
 const child_process_1 = require("child_process");
+const string_decoder_1 = require("string_decoder");
 const protocol_1 = require("./protocol");
 class RpcTimeoutError extends Error {
     constructor(message = 'Connection timeout') {
@@ -57,6 +58,7 @@ function sendRequest(method, params = {}, timeoutMs) {
         const conn = net.createConnection(socketPath);
         const req = { id: crypto.randomBytes(4).toString('hex'), method, params };
         let buffer = '';
+        const decoder = new string_decoder_1.StringDecoder('utf8');
         let settled = false;
         const finish = (fn) => {
             if (settled)
@@ -68,7 +70,7 @@ function sendRequest(method, params = {}, timeoutMs) {
             conn.write(JSON.stringify(req) + '\n');
         });
         conn.on('data', (chunk) => {
-            buffer += chunk.toString();
+            buffer += decoder.write(chunk);
             const idx = buffer.indexOf('\n');
             if (idx !== -1) {
                 try {
@@ -107,7 +109,7 @@ async function ensureDaemon() {
     }
     catch { }
     const daemonScript = path.join(__dirname, 'daemon.js');
-    const lockPath = (0, protocol_1.getSocketPath)() + '.lock';
+    const lockPath = (0, protocol_1.getLockPath)();
     let lockFd;
     try {
         lockFd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);

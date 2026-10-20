@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { fork } from 'child_process';
-import { getSocketPath, DEFAULT_RPC_TIMEOUT_MS } from './protocol';
+import { StringDecoder } from 'string_decoder';
+import { getSocketPath, getLockPath, DEFAULT_RPC_TIMEOUT_MS } from './protocol';
 import type { Request, Response } from './protocol';
 
 export class RpcTimeoutError extends Error {
@@ -20,6 +21,7 @@ function sendRequest(method: string, params: Record<string, unknown> = {}, timeo
     const conn = net.createConnection(socketPath);
     const req: Request = { id: crypto.randomBytes(4).toString('hex'), method, params };
     let buffer = '';
+    const decoder = new StringDecoder('utf8');
     let settled = false;
 
     const finish = (fn: () => void) => {
@@ -33,7 +35,7 @@ function sendRequest(method: string, params: Record<string, unknown> = {}, timeo
     });
 
     conn.on('data', (chunk) => {
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       const idx = buffer.indexOf('\n');
       if (idx !== -1) {
         try {
@@ -72,7 +74,7 @@ async function ensureDaemon(): Promise<void> {
 
   const daemonScript = path.join(__dirname, 'daemon.js');
 
-  const lockPath = getSocketPath() + '.lock';
+  const lockPath = getLockPath();
   let lockFd: number | undefined;
   try {
     lockFd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);

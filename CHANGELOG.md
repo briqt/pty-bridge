@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.1
+
+- Put Windows daemon startup locks beside the state file rather than under the named-pipe namespace; a direct Windows filesystem probe reproduced ENOENT before this fix.
+- Decode RPC streams incrementally so UTF-8 characters survive network chunk boundaries in both directions.
+- Add writable-lock and deliberately fragmented Unicode RPC regression checks.
+
 ## v1.5.0
 
 - Review stable upstream dependencies: use @types/node 26.6.5, retain stable xterm 6.0.0/TypeScript 7.0.2, and document the intentional prebuilt-native package exception.

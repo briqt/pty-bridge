@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.KEY_MAP = exports.DEFAULT_RPC_TIMEOUT_MS = exports.WAIT_FOR_LOOKBACK_LINES = exports.RAW_BUFFER_CAP = exports.DEFAULT_MAX_BYTES = exports.IDLE_TIMEOUT_MS = exports.SOCKET_PATH = void 0;
 exports.getSocketPath = getSocketPath;
 exports.getStatePath = getStatePath;
+exports.getLockPath = getLockPath;
 exports.defaultOwner = defaultOwner;
 exports.truncateUtf8 = truncateUtf8;
 exports.rpcTimeoutForWait = rpcTimeoutForWait;
@@ -26,6 +27,11 @@ function getStatePath() {
         return (0, path_1.join)((0, os_1.tmpdir)(), `pty-bridge-${username}.state.json`);
     }
     return `${socket}.state.json`;
+}
+function getLockPath() {
+    // Named pipes are endpoints, not filesystem directories. O_CREAT cannot create
+    // a startup lock beneath \\.\pipe on Windows.
+    return (0, os_1.platform)() === 'win32' ? `${getStatePath()}.lock` : `${getSocketPath()}.lock`;
 }
 function defaultOwner() {
     return process.env.PTY_BRIDGE_OWNER || process.env.USER || process.env.USERNAME || 'default';

@@ -7,7 +7,7 @@ description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI ap
 
 `pty-bridge` is a CLI that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool can't handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects a real terminal.
 
-This manual requires **pty-bridge 1.5.0+**. Skill files and the CLI are installed separately:
+This manual requires **pty-bridge 1.5.1+**. Skill files and the CLI are installed separately:
 
 ```bash
 pty-bridge --version
@@ -183,6 +183,7 @@ pty-bridge sendkey <id> ctrl-d
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `command not found: pty-bridge` | Not installed | `npm i -g github:briqt/pty-bridge --install-links` |
+| Windows daemon start fails / `ENOENT` on a `.lock` pipe path | Old startup-lock handling | Upgrade CLI to 1.5.1+; startup locks must be regular files beside the state file |
 | `connect ENOENT` or daemon start error | Daemon died | `pty-bridge status`; next `start` respawns it. Check `list` for **lost** tombstones. |
 | `Session not found` + lost warning | Daemon restarted and dropped in-memory sessions | Re-`start`. Do not reuse the old id. |
 | `Session ... is owned by` | Owner mismatch | Use your own id, or `--force` only if asked to take over |

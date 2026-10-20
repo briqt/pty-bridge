@@ -20,6 +20,12 @@ export function getStatePath(): string {
   return `${socket}.state.json`;
 }
 
+export function getLockPath(): string {
+  // Named pipes are endpoints, not filesystem directories. O_CREAT cannot create
+  // a startup lock beneath \\.\pipe on Windows.
+  return platform() === 'win32' ? `${getStatePath()}.lock` : `${getSocketPath()}.lock`;
+}
+
 export function defaultOwner(): string {
   return process.env.PTY_BRIDGE_OWNER || process.env.USER || process.env.USERNAME || 'default';
 }

@@ -78,3 +78,55 @@ test('rendered default reads resume within long lines without losing text', () =
   assert.equal(collected, text);
   assert.equal(s.readRendered().output, '');
 });
+
+test('Windows startup lock resolves to a writable regular file, not a named pipe', () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const protocol = require('../dist/protocol');
+  const platform = os.platform, previous = process.env.PTY_BRIDGE_STATE;
+  const state = path.join(os.tmpdir(), `pty-lock-test-${process.pid}.json`);
+  try {
+    os.platform = () => 'win32';
+    process.env.PTY_BRIDGE_STATE = state;
+    assert.equal(protocol.getLockPath(), state + '.lock');
+    const fd = fs.openSync(protocol.getLockPath(), fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+    fs.closeSync(fd);
+  } finally {
+    os.platform = platform;
+    if (previous === undefined) delete process.env.PTY_BRIDGE_STATE;
+    else process.env.PTY_BRIDGE_STATE = previous;
+    try { fs.unlinkSync(state + '.lock'); } catch {}
+  }
+});
+
+test('RPC client preserves Unicode when a response splits inside a UTF-8 character', async () => {
+  const fs = require('node:fs'), net = require('node:net'), os = require('node:os'), path = require('node:path');
+  const previous = process.env.PTY_BRIDGE_SOCKET;
+  const endpoint = process.platform === 'win32'
+    ? '\\\\.\\pipe\\pty-unicode-rpc-' + process.pid
+    : path.join(os.tmpdir(), 'pty-unicode-rpc-' + process.pid + '.sock');
+  process.env.PTY_BRIDGE_SOCKET = endpoint;
+  const payload = '中文🙂'.repeat(50000);
+  const server = net.createServer(socket => {
+    let request = '';
+    socket.on('data', chunk => {
+      request += chunk.toString();
+      if (!request.includes('\n')) return;
+      const message = JSON.parse(request);
+      if (message.method === 'ping') { socket.end(JSON.stringify({ id: message.id, result: { ok: true } }) + '\n'); return; }
+      const data = Buffer.from(JSON.stringify({ id: message.id, result: { text: payload } }) + '\n');
+      const cut = data.indexOf(Buffer.from('中')) + 1;
+      socket.write(data.subarray(0, cut));
+      setTimeout(() => socket.end(data.subarray(cut)), 10);
+    });
+  });
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(endpoint, resolve); });
+    const result = await require('../dist/client').request('unicode-test');
+    assert.equal(result.text, payload);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    if (previous === undefined) delete process.env.PTY_BRIDGE_SOCKET;
+    else process.env.PTY_BRIDGE_SOCKET = previous;
+    if (process.platform !== 'win32') try { fs.unlinkSync(endpoint); } catch {}
+  }
+});

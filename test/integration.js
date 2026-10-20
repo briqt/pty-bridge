@@ -116,7 +116,7 @@ if (!id) {
   }
   const doctor = run(['doctor', '--json']);
   const report = JSON.parse(doctor.stdout);
-  check('doctor includes CLI and daemon versions', report.version === '1.5.0' && report.daemon?.version === '1.5.0' && report.nativePty, doctor.stdout);
+  check('doctor includes CLI and daemon versions', report.version === '1.5.1' && report.daemon?.version === '1.5.1' && report.nativePty, doctor.stdout);
 }
 
 // --- raw CLI pagination preserves exact bytes, including CRLF and emoji

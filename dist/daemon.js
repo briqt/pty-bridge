@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const net = __importStar(require("net"));
 const fs = __importStar(require("fs"));
 const crypto = __importStar(require("crypto"));
+const string_decoder_1 = require("string_decoder");
 const session_1 = require("./session");
 const output_1 = require("./output");
 const VERSION = require('../package.json').version;
@@ -438,8 +439,9 @@ async function main() {
     catch { }
     const server = net.createServer((conn) => {
         let buffer = '';
+        const decoder = new string_decoder_1.StringDecoder('utf8');
         conn.on('data', (chunk) => {
-            buffer += chunk.toString();
+            buffer += decoder.write(chunk);
             let idx;
             while ((idx = buffer.indexOf('\n')) !== -1) {
                 const line = buffer.slice(0, idx);

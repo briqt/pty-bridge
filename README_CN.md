@@ -144,3 +144,8 @@ active daemons/sessions; doctor exposes the running daemon version separately.
   ships matching prebuilt binaries for Linux/macOS/Windows, x64/arm64.
 
 Source: [maintainer's versioning explanation](https://github.com/lydell/node-pty/releases/tag/v1.2.0-beta.3).
+
+
+Version 1.5.1 fixes native Windows daemon startup: lock files are stored beside the
+state file, outside the named-pipe namespace. RPC streams also preserve UTF-8 when
+transport chunks split within a character. Windows users should use 1.5.1 or later.

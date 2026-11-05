@@ -39,11 +39,12 @@ const protocol_1 = require("./protocol");
 const session_1 = require("./session");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-const VERSION = require('../package.json').version;
+const updater_1 = require("./updater");
 const protocol_2 = require("./protocol");
 const args = process.argv.slice(2);
 let globalTimeout;
 let globalOwner;
+let noUpdateCheck = false;
 function fail(message) { console.error(`Error: ${message}`); process.exit(1); }
 function positive(value, name) {
     if (!value || !/^\d+$/.test(value) || Number(value) <= 0)
@@ -51,8 +52,12 @@ function positive(value, name) {
     return Number(value);
 }
 // Global options work before the subcommand; subcommand parsers keep child arguments intact.
-while (['--timeout', '--rpc-timeout-ms', '--owner'].includes(args[0])) {
+while (['--timeout', '--rpc-timeout-ms', '--owner', '--no-update-check'].includes(args[0])) {
     const flag = args.shift();
+    if (flag === '--no-update-check') {
+        noUpdateCheck = true;
+        continue;
+    }
     const value = args.shift();
     if (!value || value.startsWith('--'))
         fail(`${flag} requires a value`);
@@ -124,12 +129,14 @@ Usage:
   pty-bridge resize <id> <cols> <rows>                Resize terminal
   pty-bridge status                                   Show daemon status
   pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
+  pty-bridge check-update [--json]                    Check the latest stable release (no daemon)
   pty-bridge --version                                CLI version
 
 Global options:
   --rpc-timeout-ms <n>  RPC timeout in ms (before or after subcommand)
   --owner <name>        Caller identity (also accepted on each mutation)
   --help                Works on subcommands too
+  --no-update-check     Disable update checks; place before the subcommand
   start --json          Return sessionId and owner as JSON
   list --json --owner <name> --alive-only              Filter sessions
 
@@ -235,7 +242,7 @@ async function peekAfterTimeout(sessionId) {
 }
 async function main() {
     if (command === '--version' || command === '-V') {
-        console.log(VERSION);
+        console.log(updater_1.CURRENT_VERSION);
         return;
     }
     const wantsHelp = command === 'start' ? ['--help', '-h'].includes(args[1]) : args.slice(1).some(a => a === '--help' || a === '-h');
@@ -243,6 +250,21 @@ async function main() {
         usage();
     try {
         switch (command) {
+            case 'check-update': {
+                const json = parseBoolFlag(args.slice(1), '--json');
+                if (json.rest.length)
+                    fail('check-update accepts only --json');
+                const result = await (0, updater_1.checkForUpdates)({ explicit: true, disabled: noUpdateCheck });
+                if (json.present)
+                    console.log(JSON.stringify(result));
+                else if (result.status === 'available')
+                    console.log((0, updater_1.updateMessage)({ version: result.latestVersion, url: result.releaseUrl }));
+                else
+                    console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+                if (result.status === 'error' || result.status === 'busy')
+                    process.exitCode = 1;
+                break;
+            }
             case 'start': {
                 const cmd = args[1];
                 if (!cmd) {
@@ -621,7 +643,7 @@ async function main() {
                 }
                 const daemon = await (0, client_1.inspectDaemon)();
                 const dependencyVersions = Object.fromEntries(['@lydell/node-pty', '@xterm/headless'].map(name => [name, dependencyVersion(name)]));
-                const result = { version: VERSION, dependencyVersions, cliPath: __filename, node: process.version, nodePath: process.execPath, socket: (0, protocol_1.getSocketPath)(), owner: globalOwner || (0, protocol_2.defaultOwner)(), nativePty, nativeError, daemon, capabilities: ['absolute-raw-byte-cursors', 'rendered-column-cursors', 'owner-guard', 'wait-exit'] };
+                const result = { version: updater_1.CURRENT_VERSION, dependencyVersions, cliPath: __filename, node: process.version, nodePath: process.execPath, socket: (0, protocol_1.getSocketPath)(), owner: globalOwner || (0, protocol_2.defaultOwner)(), nativePty, nativeError, daemon, capabilities: ['absolute-raw-byte-cursors', 'rendered-column-cursors', 'owner-guard', 'wait-exit'] };
                 console.log(json.present ? JSON.stringify(result) : JSON.stringify(result, null, 2));
                 if (!nativePty)
                     process.exitCode = 1;
@@ -657,4 +679,9 @@ async function main() {
         process.exit(1);
     }
 }
-main();
+main().then(async () => {
+    // Keep help/version/doctor offline and leave high-frequency PTY I/O untouched.
+    if (['start', 'list', 'status'].includes(command) && !process.exitCode) {
+        await (0, updater_1.checkForUpdates)({ disabled: noUpdateCheck });
+    }
+}).catch(err => { console.error(`Error: ${err instanceof Error ? err.message : String(err)}`); process.exitCode = 1; });

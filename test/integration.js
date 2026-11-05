@@ -16,6 +16,7 @@ const envBase = {
   PTY_BRIDGE_SOCKET: SOCKET,
   PTY_BRIDGE_STATE: STATE,
   PTY_BRIDGE_OWNER: 'tester',
+  PTY_BRIDGE_NO_UPDATE_CHECK: '1',
 };
 
 let failed = 0;
@@ -116,7 +117,8 @@ if (!id) {
   }
   const doctor = run(['doctor', '--json']);
   const report = JSON.parse(doctor.stdout);
-  check('doctor includes CLI and daemon versions', report.version === '1.5.1' && report.daemon?.version === '1.5.1' && report.nativePty, doctor.stdout);
+  const version = require('../package.json').version;
+  check('doctor includes CLI and daemon versions', report.version === version && report.daemon?.version === version && report.nativePty, doctor.stdout);
 }
 
 // --- raw CLI pagination preserves exact bytes, including CRLF and emoji

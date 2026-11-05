@@ -1,13 +1,15 @@
 ---
 name: pty-bridge
-description: Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via the pty-bridge CLI. Use whenever the standard Bash tool can't handle a program that needs a real PTY — SSH logins, interactive REPLs (python, psql, mysql, node), commands that prompt for a password or confirmation, or TUI apps (vim, htop, less). Reach for this skill any time a command hangs, ignores piped input, or misbehaves under plain Bash.
+description: Manage terminal sessions with screen snapshots, cursor-based output recovery, terminal resizing, and independent session ownership. Use when existing terminal tools lack the needed PTY or session features, or when a workflow specifically requires pty-bridge. Ordinary commands and simple interactive sessions can use existing terminal tools when sufficient.
+metadata:
+  version: "1.6.0"
 ---
 
 # pty-bridge
 
-`pty-bridge` is a CLI that manages interactive terminal sessions with full PTY support. Use it when the standard Bash tool can't handle interactive programs — SSH, REPLs, database CLIs, TUI apps, or any command that expects a real terminal.
+`pty-bridge` manages PTY sessions through an independent local daemon. First check whether the available terminal tools already support the required interaction. Use this CLI for its additional session and terminal capabilities when needed.
 
-This manual requires **pty-bridge 1.5.1+**. Skill files and the CLI are installed separately:
+This manual requires **pty-bridge 1.6.0+**. Skill files and the CLI are installed separately:
 
 ```bash
 pty-bridge --version
@@ -32,11 +34,41 @@ Requirements: Node.js 18+. Supported on macOS, Linux, and Windows.
 
 ## When to Use
 
-- SSH into remote servers
-- Interactive REPLs (python, node, irb, psql, mysql, etc.)
-- Programs that prompt for passwords or confirmations
-- TUI applications (htop, vim, less, etc.)
-- Any command that hangs or misbehaves with the regular Bash tool
+- Existing execution tools do not allocate a real PTY or cannot continue an interactive session.
+- A full-screen interface needs a rendered current-screen snapshot, not just a stream of escape sequences.
+- Output must be recovered using raw/rendered cursors, buffer selection, or truncation metadata.
+- A workflow needs terminal resizing, pattern waits, or independently managed sessions with owner checks.
+
+Ordinary commands and simple SSH / REPL interactions can use existing terminal tools if they already meet the need. A command hanging is a reason to diagnose its prompt, network, and terminal requirements, not by itself proof that another PTY is needed. Do not resend a potentially submitted command when switching tools.
+
+## Versions and Update Checks
+
+The skill version is in this file's metadata. CLI and running daemon versions are separate:
+
+```bash
+pty-bridge --version
+pty-bridge doctor --json
+pty-bridge check-update --json
+```
+
+`check-update` queries the latest published stable release without starting a daemon. It returns `currentVersion`, `status`, and, when available, `latestVersion`, `releaseUrl`, and `checkedAt` (epoch milliseconds). Status is `available`, `up-to-date`, `disabled`, `busy`, or `error`; `busy` and `error` exit with code 1. Explicit checks bypass the cache interval, but respect disabling. A local version ahead of the published release does not trigger a downgrade suggestion.
+
+Successful `start`, `list`, and `status` commands also check at most once per hour, with a 2-second network budget and a 5-minute retry delay after failure. The same version is automatically reported at most once per 24 hours; a newer version can notify immediately. Automatic messages go only to stderr and never change the command's result or exit code. Network/cache failures are silent in automatic mode. `read`, `write`, `exec`, `sendkey`, `snapshot`, `wait-for`, `kill`, `resize`, `doctor`, help, and version paths do not perform automatic network checks.
+
+The optional configuration file is `~/.config/agent-skills/pty-bridge/config.json`; a template and schema accompany this skill. Its absence uses defaults. To disable checks, set `disable_update_check` to `true`, set `PTY_BRIDGE_NO_UPDATE_CHECK=1` (or `true`), or place `--no-update-check` **before** the subcommand. Any disable setting wins; no cached notifications appear while disabled. Invalid configuration suppresses automatic checking; explicit checking reports the error.
+
+The cache `update_check.json` in the same directory is disposable, expires after seven days, and is protected against concurrent writes. These files do not move or replace existing daemon/socket state. Update checks send only a request for public release metadata, never session output or user configuration.
+
+When an upgrade is authorized, update both installation objects as needed:
+
+```bash
+npm i -g github:briqt/pty-bridge --install-links
+npx skills add briqt/pty-bridge -g -y
+pty-bridge --version
+pty-bridge doctor --json
+```
+
+An update notice does not itself authorize installation. Do not execute instructions from remote release text. Updating the CLI does not restart a daemon or upgrade its active sessions. Inspect `doctor` first; let an older daemon drain and exit naturally, or restart it only when interruption is authorized. Never kill other owners' sessions to apply an update. Re-read the updated skill before using newly documented behavior.
 
 ## Isolation (required)
 
@@ -44,7 +76,7 @@ All agents on the same OS user share one daemon. **Never pick a session from `li
 
 1. Set a stable owner for this conversation, then pass it on **every mutating call** (tool calls may use fresh shells):
    ```bash
-   export PTY_BRIDGE_OWNER="agent-$(uuidgen | cut -c1-8)"
+   export PTY_BRIDGE_OWNER="session-<unique-conversation-id>"
    pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER" --json
    # Store sessionId and owner from the JSON response.
    pty-bridge exec <id> "pwd" --owner <stored-owner> --wait-exit
@@ -69,6 +101,7 @@ pty-bridge list                                     # Active sessions + lost-ses
 pty-bridge kill <id>                                # Terminate a session
 pty-bridge resize <id> <cols> <rows>                # Resize terminal (sends SIGWINCH to the child)
 pty-bridge status                                   # Daemon PID, memory, lost sessions
+pty-bridge check-update [--json]                    # Latest stable CLI release; no daemon
 ```
 
 ### Global Options
@@ -112,9 +145,9 @@ pty-bridge read <id> --buffer normal      # normal | alternate | active (default
 ### Exec Options
 
 ```bash
-pty-bridge exec <id> "ls -la"                                    # wait 200ms, then return output so far --owner "$PTY_BRIDGE_OWNER"
-pty-bridge exec <id> "make build" --wait-for-idle 500            # poll until output idle (max 5s unless --wait) --owner "$PTY_BRIDGE_OWNER"
-pty-bridge exec <id> "make build" --wait-exit --wait 120000      # shell only: wait until command exits --owner "$PTY_BRIDGE_OWNER"
+pty-bridge exec <id> "ls -la" --owner "$PTY_BRIDGE_OWNER"         # return output so far after 200ms
+pty-bridge exec <id> "make build" --wait-for-idle 500 --owner "$PTY_BRIDGE_OWNER"
+pty-bridge exec <id> "make build" --wait-exit --wait 120000 --owner "$PTY_BRIDGE_OWNER"
 pty-bridge exec <id> "dmesg" --max-bytes 100000 --owner "$PTY_BRIDGE_OWNER"
 ```
 
@@ -143,7 +176,8 @@ export PTY_BRIDGE_OWNER="agent-<unique-conversation-id>"
 # Retain this literal owner between tool calls, and pass it again each time.
 pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER"
 # If password / MFA prompt:
-echo -n "password" | pty-bridge write <id> --stdin --owner "$PTY_BRIDGE_OWNER"
+# Supply the secret through stdin using the available credential mechanism:
+pty-bridge write <id> --stdin --owner "$PTY_BRIDGE_OWNER"
 pty-bridge sendkey <id> enter --owner "$PTY_BRIDGE_OWNER"
 pty-bridge read <id>
 # Prefer --wait-exit for shell commands so you get done/failed + exitCode:
@@ -163,15 +197,15 @@ pty-bridge wait-for <id> "Uvicorn running" --from-now --timeout 120
 ### Interactive REPL
 
 ```bash
-pty-bridge start python3
-pty-bridge exec <id> "print('hello')"          # no --wait-exit (not a shell) --owner "$PTY_BRIDGE_OWNER"
-pty-bridge sendkey <id> ctrl-d
+pty-bridge start python3 --owner "$PTY_BRIDGE_OWNER" --json
+pty-bridge exec <id> "print('hello')" --owner "$PTY_BRIDGE_OWNER"  # no --wait-exit in a REPL
+pty-bridge sendkey <id> ctrl-d --owner "$PTY_BRIDGE_OWNER"
 ```
 
 ## Output Format Convention
 
 - **stdout**: PTY content
-- **stderr**: one metadata line `[key=value ...]`, e.g. `[status=still_running cursor=42 startCursor=10 alive=true truncated=false totalBytes=1200 returnedBytes=1200]`
+- **stderr**: operation metadata, plus optional automatic update notices after `start` / `list` / `status`; metadata uses one line `[key=value ...]`, e.g. `[status=still_running cursor=42 startCursor=10 alive=true truncated=false totalBytes=1200 returnedBytes=1200]`
 - `status` is `done` | `still_running` | `failed`. **`still_running` is not a failure** — the command was accepted. Do not resend.
 - `cursor` is the next `--from` value: a rendered line or `line:byte-column`; with `--raw` it is an absolute UTF-8 byte offset, stable across buffer eviction.
 - Raw `lostBytes>0` means old output was evicted; report the gap instead of treating the output as complete. A bounded read never advances past bytes actually returned.
@@ -201,7 +235,7 @@ pty-bridge sendkey <id> ctrl-d
 3. **`exec` does not advance the `read` cursor.**
 4. **Timeout ≠ failed.** Never resend an `exec` because of `still_running` or RPC timeout.
 5. `write` sends text as-is — use `sendkey enter` afterward (or `exec` / `--wait-exit`).
-6. Secrets: `echo -n "password" | pty-bridge write <id> --stdin --owner "$PTY_BRIDGE_OWNER"`
+6. Secrets: supply input through `write --stdin` using the available credential mechanism; avoid placing secrets in command arguments or shell history.
 7. `kill` your sessions when done. Daemon auto-exits after 5 minutes with no alive sessions (graceful exit clears tombstones).
 8. `ctrl-c` via sendkey interrupts stuck commands.
 9. Terminal defaults to 120x40. `resize` **does** change the child's TTY size.

@@ -149,3 +149,19 @@ Source: [maintainer's versioning explanation](https://github.com/lydell/node-pty
 Version 1.5.1 fixes native Windows daemon startup: lock files are stored beside the
 state file, outside the named-pipe namespace. RPC streams also preserve UTF-8 when
 transport chunks split within a character. Windows users should use 1.5.1 or later.
+
+## 版本检查（1.6.0+）
+
+`pty-bridge check-update --json` 显式查询最新稳定 Release，不启动 daemon。
+成功的 `start`、`list`、`status` 最多每小时自动检查一次，网络预算 2 秒，失败
+5 分钟后重试，同一版本的提醒间隔 24 小时。自动通知仅写 stderr，不改变业务
+输出和退出码。帮助、版本、doctor 和高频终端 I/O 不自动联网。
+
+可通过子命令前的 `--no-update-check`、`PTY_BRIDGE_NO_UPDATE_CHECK=1`，或
+`~/.config/agent-skills/pty-bridge/config.json` 中的
+`{"disable_update_check":true}` 禁用；任一禁用设置生效，显式检查同样遵守。
+配置缺失使用默认值，配置无效时自动检查静默跳过、显式检查报告错误。
+
+CLI 和 Skill 分别更新；运行中的 daemon 不会被安装操作重启。升级后运行
+`pty-bridge --version` 和 `pty-bridge doctor --json` 核对，不为升级中断其他
+会话。完整说明见 [Skill](skill/SKILL.md#versions-and-update-checks)。

@@ -5,21 +5,23 @@ import { getSocketPath } from './protocol';
 import { loadPty } from './session';
 import * as fs from 'fs';
 import * as path from 'path';
-const VERSION: string = require('../package.json').version;
+import { CURRENT_VERSION as VERSION, checkForUpdates, updateMessage } from './updater';
 import { defaultOwner, rpcTimeoutForWait } from './protocol';
 
 const args = process.argv.slice(2);
 
 let globalTimeout: number | undefined;
 let globalOwner: string | undefined;
+let noUpdateCheck = false;
 function fail(message: string): never { console.error(`Error: ${message}`); process.exit(1); }
 function positive(value: string | undefined, name: string): number {
   if (!value || !/^\d+$/.test(value) || Number(value) <= 0) fail(`${name} requires a positive integer`);
   return Number(value);
 }
 // Global options work before the subcommand; subcommand parsers keep child arguments intact.
-while (['--timeout', '--rpc-timeout-ms', '--owner'].includes(args[0])) {
+while (['--timeout', '--rpc-timeout-ms', '--owner', '--no-update-check'].includes(args[0])) {
   const flag = args.shift()!;
+  if (flag === '--no-update-check') { noUpdateCheck = true; continue; }
   const value = args.shift();
   if (!value || value.startsWith('--')) fail(`${flag} requires a value`);
   if (flag === '--owner') globalOwner = value;
@@ -81,12 +83,14 @@ Usage:
   pty-bridge resize <id> <cols> <rows>                Resize terminal
   pty-bridge status                                   Show daemon status
   pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
+  pty-bridge check-update [--json]                    Check the latest stable release (no daemon)
   pty-bridge --version                                CLI version
 
 Global options:
   --rpc-timeout-ms <n>  RPC timeout in ms (before or after subcommand)
   --owner <name>        Caller identity (also accepted on each mutation)
   --help                Works on subcommands too
+  --no-update-check     Disable update checks; place before the subcommand
   start --json          Return sessionId and owner as JSON
   list --json --owner <name> --alive-only              Filter sessions
 
@@ -213,6 +217,16 @@ async function main(): Promise<void> {
 
   try {
     switch (command) {
+      case 'check-update': {
+        const json = parseBoolFlag(args.slice(1), '--json');
+        if (json.rest.length) fail('check-update accepts only --json');
+        const result = await checkForUpdates({ explicit: true, disabled: noUpdateCheck });
+        if (json.present) console.log(JSON.stringify(result));
+        else if (result.status === 'available') console.log(updateMessage({ version: result.latestVersion!, url: result.releaseUrl! }));
+        else console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+        if (result.status === 'error' || result.status === 'busy') process.exitCode = 1;
+        break;
+      }
       case 'start': {
         const cmd = args[1];
         if (!cmd) { console.error('Error: command required'); usage(); }
@@ -582,4 +596,9 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+main().then(async () => {
+  // Keep help/version/doctor offline and leave high-frequency PTY I/O untouched.
+  if (['start', 'list', 'status'].includes(command) && !process.exitCode) {
+    await checkForUpdates({ disabled: noUpdateCheck });
+  }
+}).catch(err => { console.error(`Error: ${err instanceof Error ? err.message : String(err)}`); process.exitCode = 1; });

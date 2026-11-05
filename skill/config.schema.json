@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pty-bridge update configuration",
+  "type": "object",
+  "properties": {
+    "disable_update_check": {
+      "type": "boolean",
+      "default": false,
+      "description": "Disable automatic and explicit release checks, including cached reminders."
+    }
+  },
+  "additionalProperties": false
+}

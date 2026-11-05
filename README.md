@@ -20,7 +20,7 @@ Requirements: Node.js 18+. macOS, Linux, and Windows.
 
 ## Use as an agent skill
 
-[`skill/SKILL.md`](skill/SKILL.md) documents the CLI for Claude Code, Cursor, and other compatible agents. It calls the `pty-bridge` binary from PATH (the GitHub global install above). It does not vendor a runtime.
+[`skill/SKILL.md`](skill/SKILL.md) documents the CLI for compatible terminal-capable assistants. It calls the `pty-bridge` binary from PATH (the GitHub global install above). It does not vendor a runtime.
 
 ```bash
 npx skills add briqt/pty-bridge -g
@@ -111,3 +111,23 @@ Source: [maintainer's versioning explanation](https://github.com/lydell/node-pty
 Version 1.5.1 fixes native Windows daemon startup: lock files are stored beside the
 state file, outside the named-pipe namespace. RPC streams also preserve UTF-8 when
 transport chunks split within a character. Windows users should use 1.5.1 or later.
+
+## Release checks (1.6.0+)
+
+```bash
+pty-bridge check-update --json
+pty-bridge --no-update-check start bash
+```
+
+The checker uses the latest published stable release, not the main branch version.
+Successful `start`, `list`, and `status` commands check at most hourly, with a
+2-second network budget, 5-minute failure retry and 24-hour same-version reminder
+cooldown. Automatic notices use stderr; failures never change the PTY result.
+Help, version, doctor and high-frequency I/O remain offline.
+
+Disable with `PTY_BRIDGE_NO_UPDATE_CHECK=1`, the leading `--no-update-check` flag,
+or `{"disable_update_check":true}` in
+`~/.config/agent-skills/pty-bridge/config.json`. Explicit checks respect disabling
+and report errors with exit code 1. Cache files are separate from daemon state.
+See the [skill](skill/SKILL.md#versions-and-update-checks) for configuration and
+CLI/skill/daemon upgrade handling. Upgrade notifications do not install anything.

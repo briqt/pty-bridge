@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.6.0
+
+- Add `check-update [--json]` using published stable releases and semantic version ordering.
+- Add bounded, cached release checks after successful start/list/status commands; reminders use stderr, with independent check/retry/cooldown intervals and concurrent cache protection.
+- Add configuration, environment and command-line opt-outs; keep high-frequency PTY operations and offline diagnostics free of automatic network checks.
+- Refine skill routing around terminal capabilities, document CLI/skill/daemon version separation, and fix ownership examples and secret-input guidance.
+- Add update-check regressions covering version ordering, failures, caching, concurrency, disabling, HTTP bounds and CLI output.
+
 ## v1.5.1
 
 - Put Windows daemon startup locks beside the state file rather than under the named-pipe namespace; a direct Windows filesystem probe reproduced ENOENT before this fix.

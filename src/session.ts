@@ -43,7 +43,21 @@ export interface SessionInfo {
   uptime: string;
   bufferType: 'normal' | 'alternate';
   owner: string;
+  name: string;
   lastExecStartLine: number;
+}
+
+/** One rendered terminal row; `wrapped` means it soft-wraps from the previous row. */
+export interface RenderedRow {
+  text: string;
+  wrapped: boolean;
+}
+
+/** How the daemon recognises the shell's echo (and sentinel) of the last exec. */
+export interface ExecEcho {
+  tail: string;
+  rows?: number;
+  marker?: string;
 }
 
 export interface SnapshotData {
@@ -60,7 +74,9 @@ export class Session {
   readonly command: string;
   readonly startedAt: string;
   readonly owner: string;
+  readonly name: string;
   lastExecStartLine = 0;
+  lastExecEcho: ExecEcho | undefined;
   lastExecStartRaw = 0;
   private _lastActivityAt: string;
   private pty: IPty;
@@ -86,10 +102,12 @@ export class Session {
     env?: Record<string, string>,
     keepaliveInterval?: number,
     owner = '',
+    name = '',
   ) {
     this.id = id;
     this.command = command;
     this.owner = owner;
+    this.name = name;
     this.cols = cols;
     this.rows = rows;
     this.startedAt = new Date().toISOString();
@@ -134,6 +152,7 @@ export class Session {
   get exitCode(): number | undefined { return this._exitCode; }
   get lastActivityAt(): string { return this._lastActivityAt; }
   get rawLength(): number { return this.rawOutput.end; }
+  get columns(): number { return this.cols; }
 
   private appendRaw(data: string): void { this.rawOutput.append(data); }
 
@@ -150,9 +169,10 @@ export class Session {
     this.terminal.resize(cols, rows);
   }
 
-  markExecStart(): void {
+  markExecStart(echo?: ExecEcho): void {
     this.lastExecStartLine = this.lineCount();
     this.lastExecStartRaw = this.rawOutput.end;
+    this.lastExecEcho = echo;
   }
 
   private getBuffer(which?: 'active' | 'normal' | 'alternate'): IBuffer {
@@ -245,6 +265,18 @@ export class Session {
     return lines.join('\n');
   }
 
+  /** Rendered rows from `startLine` to the last content line, with soft-wrap flags. */
+  readRows(startLine: number, buffer?: 'active' | 'normal' | 'alternate'): RenderedRow[] {
+    const buf = this.getBuffer(buffer);
+    const last = this.findLastContentLine(buf);
+    const rows: RenderedRow[] = [];
+    for (let i = Math.max(0, startLine); i <= last; i++) {
+      const line = buf.getLine(i);
+      rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped });
+    }
+    return rows;
+  }
+
   readLastLines(n: number, buffer?: 'active' | 'normal' | 'alternate'): string {
     if (n <= 0) return '';
     const buf = this.getBuffer(buffer);
@@ -305,12 +337,13 @@ export class Session {
     this.terminal.dispose();
   }
 
-  persistMeta(): { id: string; command: string; pid: number; owner: string; startedAt: string } {
+  persistMeta(): { id: string; command: string; pid: number; owner: string; name: string; startedAt: string } {
     return {
       id: this.id,
       command: this.command,
       pid: this.pid,
       owner: this.owner,
+      name: this.name,
       startedAt: this.startedAt,
     };
   }
@@ -331,6 +364,7 @@ export class Session {
       uptime: formatUptime(uptimeMs),
       bufferType: this.terminal.buffer.active.type as 'normal' | 'alternate',
       owner: this.owner,
+      name: this.name,
       lastExecStartLine: this.lastExecStartLine,
     };
   }

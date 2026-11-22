@@ -26,8 +26,26 @@ export function getLockPath(): string {
   return platform() === 'win32' ? `${getStatePath()}.lock` : `${getSocketPath()}.lock`;
 }
 
+/** Owner a new session is locked to. Locking is opt-in: empty means anyone may drive it. */
+export function lockOwner(): string {
+  return process.env.PTY_BRIDGE_OWNER || '';
+}
+
+/**
+ * Identity sent with mutations. Falls back to the OS user so sessions that older
+ * CLI versions locked to $USER by default stay usable without extra flags.
+ */
 export function defaultOwner(): string {
   return process.env.PTY_BRIDGE_OWNER || process.env.USER || process.env.USERNAME || 'default';
+}
+
+/** Names are stable, human-readable handles; they must not be mistaken for ids. */
+export function sessionNameProblem(name: string): string | null {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    return `Invalid session name '${name}': use 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit`;
+  }
+  if (/^[0-9a-f]{8}$/.test(name)) return `Invalid session name '${name}': 8 hex characters look like a session id`;
+  return null;
 }
 
 export const SOCKET_PATH = getSocketPath();
@@ -66,6 +84,7 @@ export interface StartParams {
   keepaliveInterval?: number;
   wait?: number;
   owner?: string;
+  name?: string;
 }
 
 export interface ReadParams {
@@ -130,6 +149,7 @@ export interface LostSessionInfo {
   command: string;
   pid: number;
   owner: string;
+  name?: string;
   startedAt: string;
   lostAt: string;
 }
@@ -144,6 +164,7 @@ export interface PersistState {
     command: string;
     pid: number;
     owner: string;
+    name?: string;
     startedAt: string;
   }>;
   lostSessions: LostSessionInfo[];

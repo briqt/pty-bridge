@@ -39,6 +39,7 @@ const crypto = __importStar(require("crypto"));
 const string_decoder_1 = require("string_decoder");
 const session_1 = require("./session");
 const output_1 = require("./output");
+const exec_output_1 = require("./exec-output");
 const VERSION = require('../package.json').version;
 const protocol_1 = require("./protocol");
 const sessions = new Map();
@@ -91,6 +92,7 @@ function recoverState() {
             command: s.command,
             pid: s.pid,
             owner: s.owner || '',
+            ...(s.name ? { name: s.name } : {}),
             startedAt: s.startedAt,
             lostAt,
         }));
@@ -128,10 +130,26 @@ function cleanup() {
     }
     catch { }
 }
+/** Resolve a session by id, or by name (a live session wins over exited ones). */
+function findSession(ref) {
+    const byId = sessions.get(ref);
+    if (byId)
+        return byId;
+    let exited;
+    for (const s of sessions.values()) {
+        if (s.name !== ref)
+            continue;
+        if (s.isAlive)
+            return s;
+        if (!exited || s.startedAt > exited.startedAt)
+            exited = s;
+    }
+    return exited;
+}
 function getSession(id) {
-    const session = sessions.get(id);
+    const session = findSession(id);
     if (!session) {
-        const available = Array.from(sessions.keys());
+        const available = Array.from(sessions.values()).map(s => s.name ? `${s.id}(${s.name})` : s.id);
         const hint = available.length > 0
             ? ` Available sessions: ${available.join(', ')}`
             : ' No active sessions.';
@@ -184,15 +202,56 @@ async function waitForMatch(session, startLine, matches, timeoutMs) {
         }, 100);
     });
 }
-function stripSentinel(output, token) {
-    const marker = `PTYBRIDGE_DONE_${token}:`;
-    const match = output.match(new RegExp(`${marker}(\\d+)`));
-    const exitCode = match ? parseInt(match[1], 10) : undefined;
-    const cleaned = output
-        .split('\n')
-        .filter(line => !line.includes(marker))
-        .join('\n');
-    return { output: cleaned, exitCode };
+/** Poll until the exec sentinel is printed; an exit code at the very end must be stable for one poll. */
+async function waitForSentinel(session, marker, timeoutMs) {
+    const base = Math.max(0, session.lastExecStartLine - 1);
+    const deadline = Date.now() + timeoutMs;
+    let pending;
+    for (;;) {
+        const found = (0, exec_output_1.findSentinel)(session.readRows(base), 0, marker);
+        if (found) {
+            const key = `${found.row}:${found.col}:${found.exitCode}`;
+            if (!found.atEnd || pending === key)
+                return;
+            pending = key;
+        }
+        else {
+            pending = undefined;
+        }
+        if (!session.isAlive || Date.now() >= deadline)
+            return;
+        await new Promise(r => setTimeout(r, 100));
+    }
+}
+/** Output of the last exec without the echoed input, sentinel or redrawn prompt. */
+function execResult(session, maxBytes) {
+    const startLine = session.lastExecStartLine;
+    // The command is typed on the prompt row, one row above the exec start line.
+    const base = Math.max(0, startLine - 1);
+    const echo = session.lastExecEcho;
+    const extracted = (0, exec_output_1.extractExecOutput)(session.readRows(base), startLine - base, echo);
+    const trunc = wrapOutput(extracted.output, maxBytes);
+    let status;
+    let exitCode = session.exitCode;
+    if (echo?.marker && extracted.matched) {
+        exitCode = extracted.exitCode;
+        status = exitCode === 0 ? 'done' : 'failed';
+    }
+    else if (session.isAlive) {
+        status = 'still_running';
+    }
+    else {
+        status = !echo?.marker && session.exitCode === 0 ? 'done' : 'failed';
+    }
+    const bodyLine = base + extracted.bodyRow;
+    return {
+        ...trunc,
+        status,
+        isAlive: session.isAlive,
+        exitCode,
+        startCursor: bodyLine,
+        cursor: trunc.truncated ? (0, output_1.renderedCursor)(bodyLine, trunc.output) : session.lineCount(),
+    };
 }
 async function handleRequest(req) {
     try {
@@ -208,8 +267,19 @@ async function dispatch(req) {
     switch (req.method) {
         case 'start': {
             const p = req.params;
+            const name = p.name || '';
+            if (name) {
+                const problem = (0, protocol_1.sessionNameProblem)(name);
+                if (problem)
+                    throw new Error(problem);
+                for (const s of sessions.values()) {
+                    if (s.name === name && s.isAlive) {
+                        throw new Error(`Session name '${name}' is already used by live session ${s.id}. Use that session if it is yours, or choose another name.`);
+                    }
+                }
+            }
             const id = genId();
-            const session = new session_1.Session(id, p.command, p.args || [], p.cols || 120, p.rows || 40, p.cwd || process.cwd(), p.env, p.keepaliveInterval, p.owner || '');
+            const session = new session_1.Session(id, p.command, p.args || [], p.cols || 120, p.rows || 40, p.cwd || process.cwd(), p.env, p.keepaliveInterval, p.owner || '', name);
             sessions.set(id, session);
             totalSessionCount++;
             if (idleTimer) {
@@ -224,6 +294,7 @@ async function dispatch(req) {
             return {
                 sessionId: id,
                 owner: session.owner,
+                name: session.name,
                 output,
                 status: session.isAlive ? 'still_running' : (session.exitCode === 0 ? 'done' : 'failed'),
                 startCursor,
@@ -269,31 +340,19 @@ async function dispatch(req) {
             const session = getSession(p.sessionId);
             assertOwner(session, p, 'exec');
             const mb = maxBytesOf(p.maxBytes);
-            session.markExecStart();
-            const startLine = session.lastExecStartLine;
             if (p.waitExit) {
                 const token = crypto.randomBytes(4).toString('hex');
                 const marker = `PTYBRIDGE_DONE_${token}:`;
+                session.markExecStart({ tail: `${marker}$?`, marker });
                 session.write(`${p.command}; echo ${marker}$?\r`);
-                const doneRe = new RegExp(`${marker}\\d+`);
-                const waited = await waitForMatch(session, startLine, (s) => doneRe.test(s), p.waitMs || 30000);
-                const stripped = stripSentinel(waited.output, token);
-                let status;
-                if (waited.matched)
-                    status = stripped.exitCode === 0 ? 'done' : 'failed';
-                else
-                    status = session.isAlive ? 'still_running' : 'failed';
-                const trunc = wrapOutput(stripped.output, mb);
+                await waitForSentinel(session, marker, p.waitMs || 30000);
+                const result = execResult(session, mb);
                 persistState();
-                return {
-                    ...trunc,
-                    status,
-                    isAlive: session.isAlive,
-                    exitCode: waited.matched ? stripped.exitCode : session.exitCode,
-                    startCursor: startLine,
-                    cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
-                };
+                return result;
             }
+            const lastInputLine = p.command.split('\n').filter(line => line.trim()).pop() ?? '';
+            session.markExecStart({ tail: lastInputLine, rows: (0, exec_output_1.echoSearchRows)(p.command, session.columns) });
+            const startLine = session.lastExecStartLine;
             session.write(p.command + '\r');
             if (p.waitForIdle && p.waitForIdle > 0) {
                 const maxWait = p.waitMs || 5000;
@@ -320,37 +379,14 @@ async function dispatch(req) {
             else {
                 await new Promise(r => setTimeout(r, p.waitMs || 200));
             }
-            const output = session.readFrom(startLine);
-            let status;
-            if (!session.isAlive)
-                status = session.exitCode === 0 ? 'done' : 'failed';
-            else
-                status = 'still_running';
-            const trunc = wrapOutput(output, mb);
+            const result = execResult(session, mb);
             persistState();
-            return {
-                ...trunc,
-                status,
-                isAlive: session.isAlive,
-                exitCode: session.exitCode,
-                startCursor: startLine,
-                cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
-            };
+            return result;
         }
         case 'peekExec': {
             const p = req.params;
             const session = getSession(p.sessionId);
-            const mb = maxBytesOf(p.maxBytes);
-            const startLine = session.lastExecStartLine;
-            const trunc = wrapOutput(session.readFrom(startLine), mb);
-            return {
-                ...trunc,
-                status: session.isAlive ? 'still_running' : (session.exitCode === 0 ? 'done' : 'failed'),
-                isAlive: session.isAlive,
-                exitCode: session.exitCode,
-                startCursor: startLine,
-                cursor: trunc.truncated ? (0, output_1.renderedCursor)(startLine, trunc.output) : session.lineCount(),
-            };
+            return execResult(session, maxBytesOf(p.maxBytes));
         }
         case 'waitFor': {
             const p = req.params;
@@ -398,7 +434,7 @@ async function dispatch(req) {
             const session = getSession(p.sessionId);
             assertOwner(session, p, 'kill');
             session.kill();
-            sessions.delete(p.sessionId);
+            sessions.delete(session.id);
             persistState();
             resetIdleTimer();
             return { ok: true };

@@ -36,7 +36,7 @@
 
 ### Smart Exec
 
-- `exec` 命令组合 write + enter + wait + read 为一步
+- `exec` 命令组合 write + enter + wait + read 为一步；`--wait-exit` 只返回命令本身的输出（去掉回显、sentinel 和提示符）
 - `--wait-for-idle` 等输出稳定再返回，不用硬猜该等多久
 - `waitFor` 支持等特定字符串出现，增量匹配（200ms 轮询）
 
@@ -67,30 +67,30 @@ npx skills add briqt/pty-bridge -g
 ## 快速开始
 
 ```bash
-export PTY_BRIDGE_OWNER="my-agent"
+# 开一个 SSH 会话，起个名字代替 id
+pty-bridge start ssh user@host --keepalive 30 --name remote
 
-# 开一个 SSH 会话
-pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER"
-
-# 执行命令并等到退出
-pty-bridge exec <id> "ls -la" --wait-exit
+# 执行命令并等到退出（只返回命令输出）
+pty-bridge exec remote "ls -la" --wait-exit
 
 # 开一个 Python REPL（不要用 --wait-exit）
-pty-bridge start python3
-pty-bridge exec <id> "print('hello')"
+pty-bridge start python3 --name py
+pty-bridge exec py "print('hello')"
 
 # 用完销毁
-pty-bridge kill <id>
+pty-bridge kill remote
+pty-bridge kill py
 ```
 
-完整命令参考见 [`skill/SKILL.md`](skill/SKILL.md)（owner、`--raw`、截断续读、daemon 重启丢失声明）。
+Agent 用法见 [`skill/SKILL.md`](skill/SKILL.md)，全部选项见 `pty-bridge <command> --help`。
 
 ## 架构
 
 - **Daemon**：首次 `start` 自动启动，通过 Unix socket / Named Pipe 管理 PTY 会话
 - **Client**：轻量 CLI，向 daemon 发送命令
 - **Sessions**：每个会话独立 PTY + xterm.js headless terminal 解析输出
-- **Owner**：会话带所有者；写别人的会话默认拒绝，需 `--force`
+- **Name**：可选的稳定名字（`start --name`），凡是能写 id 的地方都能用
+- **Owner**：可选的锁（`start --owner`）；修改加锁的会话需要对应 owner 或 `--force`
 - **Tombstone**：daemon 崩溃后 `list` / `status` 会声明丢失了哪些会话
 
 daemon 在 5 分钟无活跃会话后自动退出。
@@ -128,15 +128,15 @@ Raw cursors are absolute UTF-8 byte offsets; bounded reads preserve every return
 byte and report eviction through `lostBytes`. Rendered cursors may include a byte
 column (`line:column`). Pass the returned cursor unchanged to `read --from`.
 Subcommand help, `start --json`, and `list --owner NAME --alive-only --json` are supported.
-Keep both the session id and owner across agent tool calls. A CLI update preserves
+Keep the session id or name across agent tool calls; repeat the owner only for locked sessions. A CLI update preserves
 active daemons/sessions; doctor exposes the running daemon version separately.
 
 
-### Dependency review (2026-10-20)
+### Dependency review (2026-11-22)
 
 - `@xterm/headless` 6.0.0 and TypeScript 7.0.2 are already the latest stable releases.
-- Upgrade `@types/node` to stable 26.6.5; compiled runtime targets remain ES2022.
-- Keep `@lydell/node-pty` exactly at npm's current latest 1.2.0-beta.15. This is an
+- Upgrade `@types/node` to stable 26.6.6; compiled runtime targets remain ES2022.
+- Keep `@lydell/node-pty` exactly at npm's current latest 1.2.0-beta.18. This is an
   intentional exception to the stable-only preference: the maintainer explains
   that the older stable-labelled 1.1.0 was based on node-pty 1.1.0-beta14, and that
   the later 1.2 beta repackaging fixed problems in the official 1.1.0 prebuilds.
@@ -164,4 +164,23 @@ transport chunks split within a character. Windows users should use 1.5.1 or lat
 
 CLI 和 Skill 分别更新；运行中的 daemon 不会被安装操作重启。升级后运行
 `pty-bridge --version` 和 `pty-bridge doctor --json` 核对，不为升级中断其他
-会话。完整说明见 [Skill](skill/SKILL.md#versions-and-update-checks)。
+会话。完整说明见 [skill/references/updates.md](skill/references/updates.md)。
+
+## Exec 输出、会话名与可选锁（1.7.0+）
+
+```bash
+pty-bridge start bash --name build
+pty-bridge exec build "make test" --wait-exit     # stdout：只有 make 的输出
+# stderr：[status=done exitCode=0]
+```
+
+- `exec --wait-exit` 只返回命令本身的输出：命令回显（包括折成多行的长命令）、sentinel
+  和随后重绘的提示符都会去掉；末尾不带换行的输出会保留。窄终端里被折行的 sentinel
+  能立即识别，不再空等到超时。
+- 元数据只输出有用的字段：还有内容可读时给 cursor，截断时给字节数，进程退出时给
+  `alive=false`，输出被淘汰时给 `lostBytes`。
+- `start --name <name>` 给会话一个稳定的名字，凡是能写 id 的地方都能写名字。名字在
+  存活会话中唯一，且不能长得像 id。
+- 会话默认不加锁；只有用 `--owner` 或 `PTY_BRIDGE_OWNER` 启动时才加锁，加锁的会话
+  每次修改操作仍需带 owner（或 `--force`）。旧版 CLI 默认锁给系统用户的会话，无需额外
+  参数即可继续使用。

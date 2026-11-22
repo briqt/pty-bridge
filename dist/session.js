@@ -70,7 +70,9 @@ class Session {
     command;
     startedAt;
     owner;
+    name;
     lastExecStartLine = 0;
+    lastExecEcho;
     lastExecStartRaw = 0;
     _lastActivityAt;
     pty;
@@ -85,10 +87,11 @@ class Session {
     keepaliveTimer = null;
     rawOutput = new output_1.RawOutputBuffer(protocol_1.RAW_BUFFER_CAP);
     readColumns = { normal: 0, alternate: 0 };
-    constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval, owner = '') {
+    constructor(id, command, args, cols, rows, cwd, env, keepaliveInterval, owner = '', name = '') {
         this.id = id;
         this.command = command;
         this.owner = owner;
+        this.name = name;
         this.cols = cols;
         this.rows = rows;
         this.startedAt = new Date().toISOString();
@@ -131,6 +134,7 @@ class Session {
     get exitCode() { return this._exitCode; }
     get lastActivityAt() { return this._lastActivityAt; }
     get rawLength() { return this.rawOutput.end; }
+    get columns() { return this.cols; }
     appendRaw(data) { this.rawOutput.append(data); }
     write(data) {
         if (!this._isAlive)
@@ -144,9 +148,10 @@ class Session {
         this.pty.resize(cols, rows);
         this.terminal.resize(cols, rows);
     }
-    markExecStart() {
+    markExecStart(echo) {
         this.lastExecStartLine = this.lineCount();
         this.lastExecStartRaw = this.rawOutput.end;
+        this.lastExecEcho = echo;
     }
     getBuffer(which) {
         if (!which || which === 'active')
@@ -238,6 +243,17 @@ class Session {
         }
         return lines.join('\n');
     }
+    /** Rendered rows from `startLine` to the last content line, with soft-wrap flags. */
+    readRows(startLine, buffer) {
+        const buf = this.getBuffer(buffer);
+        const last = this.findLastContentLine(buf);
+        const rows = [];
+        for (let i = Math.max(0, startLine); i <= last; i++) {
+            const line = buf.getLine(i);
+            rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped });
+        }
+        return rows;
+    }
     readLastLines(n, buffer) {
         if (n <= 0)
             return '';
@@ -307,6 +323,7 @@ class Session {
             command: this.command,
             pid: this.pid,
             owner: this.owner,
+            name: this.name,
             startedAt: this.startedAt,
         };
     }
@@ -326,6 +343,7 @@ class Session {
             uptime: formatUptime(uptimeMs),
             bufferType: this.terminal.buffer.active.type,
             owner: this.owner,
+            name: this.name,
             lastExecStartLine: this.lastExecStartLine,
         };
     }

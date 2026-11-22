@@ -29,30 +29,30 @@ npx skills add briqt/pty-bridge -g
 ## Quick Start
 
 ```bash
-export PTY_BRIDGE_OWNER="my-agent"
+# Start an SSH session with a name you can use instead of its id
+pty-bridge start ssh user@host --keepalive 30 --name remote
 
-# Start an SSH session
-pty-bridge start ssh user@host --keepalive 30 --owner "$PTY_BRIDGE_OWNER"
-
-# Run a shell command and wait until it exits
-pty-bridge exec <id> "ls -la" --wait-exit
+# Run a shell command and wait until it exits (returns only its output)
+pty-bridge exec remote "ls -la" --wait-exit
 
 # Start a Python REPL (no --wait-exit)
-pty-bridge start python3
-pty-bridge exec <id> "print('hello')"
+pty-bridge start python3 --name py
+pty-bridge exec py "print('hello')"
 
-# Kill session when done
-pty-bridge kill <id>
+# Kill sessions when done
+pty-bridge kill remote
+pty-bridge kill py
 ```
 
-See [`skill/SKILL.md`](skill/SKILL.md) for the full command reference (owners, `--raw`, truncated reads, lost-session tombstones).
+See [`skill/SKILL.md`](skill/SKILL.md) for agent usage, and `pty-bridge <command> --help` for every option.
 
 ## Architecture
 
 - **Daemon**: Auto-spawns on first `start`, manages PTY sessions via Unix socket
 - **Client**: Thin CLI that sends commands to the daemon
 - **Sessions**: Each session runs in its own PTY with xterm.js headless terminal for clean output
-- **Owners**: Sessions are tagged; writes to another owner's session require `--force`
+- **Names**: Optional stable handles (`start --name`) usable wherever an id is
+- **Owners**: Optional locks (`start --owner`); mutating a locked session requires its owner or `--force`
 - **Tombstones**: If the daemon crashes, `list` / `status` report which sessions were lost
 
 The daemon auto-exits after 5 minutes with no active sessions.
@@ -90,15 +90,15 @@ Raw cursors are absolute UTF-8 byte offsets; bounded reads preserve every return
 byte and report eviction through `lostBytes`. Rendered cursors may include a byte
 column (`line:column`). Pass the returned cursor unchanged to `read --from`.
 Subcommand help, `start --json`, and `list --owner NAME --alive-only --json` are supported.
-Keep both the session id and owner across agent tool calls. A CLI update preserves
+Keep the session id or name across agent tool calls; repeat the owner only for locked sessions. A CLI update preserves
 active daemons/sessions; doctor exposes the running daemon version separately.
 
 
-### Dependency review (2026-10-20)
+### Dependency review (2026-11-22)
 
 - `@xterm/headless` 6.0.0 and TypeScript 7.0.2 are already the latest stable releases.
-- Upgrade `@types/node` to stable 26.6.5; compiled runtime targets remain ES2022.
-- Keep `@lydell/node-pty` exactly at npm's current latest 1.2.0-beta.15. This is an
+- Upgrade `@types/node` to stable 26.6.6; compiled runtime targets remain ES2022.
+- Keep `@lydell/node-pty` exactly at npm's current latest 1.2.0-beta.18. This is an
   intentional exception to the stable-only preference: the maintainer explains
   that the older stable-labelled 1.1.0 was based on node-pty 1.1.0-beta14, and that
   the later 1.2 beta repackaging fixed problems in the official 1.1.0 prebuilds.
@@ -129,5 +129,26 @@ Disable with `PTY_BRIDGE_NO_UPDATE_CHECK=1`, the leading `--no-update-check` fla
 or `{"disable_update_check":true}` in
 `~/.config/agent-skills/pty-bridge/config.json`. Explicit checks respect disabling
 and report errors with exit code 1. Cache files are separate from daemon state.
-See the [skill](skill/SKILL.md#versions-and-update-checks) for configuration and
+See [skill/references/updates.md](skill/references/updates.md) for configuration and
 CLI/skill/daemon upgrade handling. Upgrade notifications do not install anything.
+
+## Exec output, names and optional locks (1.7.0+)
+
+```bash
+pty-bridge start bash --name build
+pty-bridge exec build "make test" --wait-exit     # stdout: only make's output
+# stderr: [status=done exitCode=0]
+```
+
+- `exec --wait-exit` returns only what the command printed: the echoed input (even
+  when it wraps over several rows), the sentinel and the redrawn prompt are removed,
+  and output without a trailing newline is kept. A sentinel wrapped by a narrow
+  terminal is recognised immediately instead of waiting for the timeout.
+- Metadata lists only actionable fields: a cursor when there is more to read, byte
+  totals when truncated, `alive=false` when the process exited, `lostBytes` when
+  output was evicted.
+- `start --name <name>` gives a session a stable handle usable wherever an id is.
+  Names are unique among live sessions and cannot look like ids.
+- Sessions are unlocked unless started with `--owner` or `PTY_BRIDGE_OWNER`. Locked
+  sessions still require the owner (or `--force`) for every mutation. Sessions that
+  older CLIs locked to the OS user by default stay usable without flags.

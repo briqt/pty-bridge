@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { StringDecoder } from 'string_decoder';
 import { Session, loadPty } from './session';
 import { renderedCursor } from './output';
+import { extractExecOutput, findSentinel, echoSearchRows } from './exec-output';
 const VERSION: string = require('../package.json').version;
 import {
   getSocketPath,
@@ -13,6 +14,7 @@ import {
   DEFAULT_MAX_BYTES,
   WAIT_FOR_LOOKBACK_LINES,
   truncateUtf8,
+  sessionNameProblem,
 } from './protocol';
 import type {
   Request,
@@ -83,6 +85,7 @@ function recoverState(): void {
       command: s.command,
       pid: s.pid,
       owner: s.owner || '',
+      ...(s.name ? { name: s.name } : {}),
       startedAt: s.startedAt,
       lostAt,
     }));
@@ -115,10 +118,23 @@ function cleanup(): void {
   try { fs.unlinkSync(getSocketPath()); } catch {}
 }
 
+/** Resolve a session by id, or by name (a live session wins over exited ones). */
+function findSession(ref: string): Session | undefined {
+  const byId = sessions.get(ref);
+  if (byId) return byId;
+  let exited: Session | undefined;
+  for (const s of sessions.values()) {
+    if (s.name !== ref) continue;
+    if (s.isAlive) return s;
+    if (!exited || s.startedAt > exited.startedAt) exited = s;
+  }
+  return exited;
+}
+
 function getSession(id: string): Session {
-  const session = sessions.get(id);
+  const session = findSession(id);
   if (!session) {
-    const available = Array.from(sessions.keys());
+    const available = Array.from(sessions.values()).map(s => s.name ? `${s.id}(${s.name})` : s.id);
     const hint = available.length > 0
       ? ` Available sessions: ${available.join(', ')}`
       : ' No active sessions.';
@@ -180,15 +196,52 @@ async function waitForMatch(
   });
 }
 
-function stripSentinel(output: string, token: string): { output: string; exitCode?: number } {
-  const marker = `PTYBRIDGE_DONE_${token}:`;
-  const match = output.match(new RegExp(`${marker}(\\d+)`));
-  const exitCode = match ? parseInt(match[1], 10) : undefined;
-  const cleaned = output
-    .split('\n')
-    .filter(line => !line.includes(marker))
-    .join('\n');
-  return { output: cleaned, exitCode };
+/** Poll until the exec sentinel is printed; an exit code at the very end must be stable for one poll. */
+async function waitForSentinel(session: Session, marker: string, timeoutMs: number): Promise<void> {
+  const base = Math.max(0, session.lastExecStartLine - 1);
+  const deadline = Date.now() + timeoutMs;
+  let pending: string | undefined;
+  for (;;) {
+    const found = findSentinel(session.readRows(base), 0, marker);
+    if (found) {
+      const key = `${found.row}:${found.col}:${found.exitCode}`;
+      if (!found.atEnd || pending === key) return;
+      pending = key;
+    } else {
+      pending = undefined;
+    }
+    if (!session.isAlive || Date.now() >= deadline) return;
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
+/** Output of the last exec without the echoed input, sentinel or redrawn prompt. */
+function execResult(session: Session, maxBytes: number) {
+  const startLine = session.lastExecStartLine;
+  // The command is typed on the prompt row, one row above the exec start line.
+  const base = Math.max(0, startLine - 1);
+  const echo = session.lastExecEcho;
+  const extracted = extractExecOutput(session.readRows(base), startLine - base, echo);
+  const trunc = wrapOutput(extracted.output, maxBytes);
+  let status: OpStatus;
+  let exitCode = session.exitCode;
+  if (echo?.marker && extracted.matched) {
+    exitCode = extracted.exitCode;
+    status = exitCode === 0 ? 'done' : 'failed';
+  } else if (session.isAlive) {
+    status = 'still_running';
+  } else {
+    status = !echo?.marker && session.exitCode === 0 ? 'done' : 'failed';
+  }
+  const bodyLine = base + extracted.bodyRow;
+  return {
+    ...trunc,
+    status,
+    isAlive: session.isAlive,
+    exitCode,
+    startCursor: bodyLine,
+    cursor: trunc.truncated ? renderedCursor(bodyLine, trunc.output) : session.lineCount(),
+  };
 }
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -205,6 +258,16 @@ async function dispatch(req: Request): Promise<unknown> {
   switch (req.method) {
     case 'start': {
       const p = req.params as unknown as StartParams;
+      const name = p.name || '';
+      if (name) {
+        const problem = sessionNameProblem(name);
+        if (problem) throw new Error(problem);
+        for (const s of sessions.values()) {
+          if (s.name === name && s.isAlive) {
+            throw new Error(`Session name '${name}' is already used by live session ${s.id}. Use that session if it is yours, or choose another name.`);
+          }
+        }
+      }
       const id = genId();
       const session = new Session(
         id,
@@ -216,6 +279,7 @@ async function dispatch(req: Request): Promise<unknown> {
         p.env,
         p.keepaliveInterval,
         p.owner || '',
+        name,
       );
       sessions.set(id, session);
       totalSessionCount++;
@@ -228,6 +292,7 @@ async function dispatch(req: Request): Promise<unknown> {
       return {
         sessionId: id,
         owner: session.owner,
+        name: session.name,
         output,
         status: session.isAlive ? 'still_running' : (session.exitCode === 0 ? 'done' : 'failed'),
         startCursor,
@@ -272,29 +337,19 @@ async function dispatch(req: Request): Promise<unknown> {
       const session = getSession(p.sessionId);
       assertOwner(session, p, 'exec');
       const mb = maxBytesOf(p.maxBytes);
-      session.markExecStart();
-      const startLine = session.lastExecStartLine;
       if (p.waitExit) {
         const token = crypto.randomBytes(4).toString('hex');
         const marker = `PTYBRIDGE_DONE_${token}:`;
+        session.markExecStart({ tail: `${marker}$?`, marker });
         session.write(`${p.command}; echo ${marker}$?\r`);
-        const doneRe = new RegExp(`${marker}\\d+`);
-        const waited = await waitForMatch(session, startLine, (s) => doneRe.test(s), p.waitMs || 30000);
-        const stripped = stripSentinel(waited.output, token);
-        let status: OpStatus;
-        if (waited.matched) status = stripped.exitCode === 0 ? 'done' : 'failed';
-        else status = session.isAlive ? 'still_running' : 'failed';
-        const trunc = wrapOutput(stripped.output, mb);
+        await waitForSentinel(session, marker, p.waitMs || 30000);
+        const result = execResult(session, mb);
         persistState();
-        return {
-          ...trunc,
-          status,
-          isAlive: session.isAlive,
-          exitCode: waited.matched ? stripped.exitCode : session.exitCode,
-          startCursor: startLine,
-          cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
-        };
+        return result;
       }
+      const lastInputLine = p.command.split('\n').filter(line => line.trim()).pop() ?? '';
+      session.markExecStart({ tail: lastInputLine, rows: echoSearchRows(p.command, session.columns) });
+      const startLine = session.lastExecStartLine;
       session.write(p.command + '\r');
       if (p.waitForIdle && p.waitForIdle > 0) {
         const maxWait = p.waitMs || 5000;
@@ -314,35 +369,14 @@ async function dispatch(req: Request): Promise<unknown> {
       } else {
         await new Promise(r => setTimeout(r, p.waitMs || 200));
       }
-      const output = session.readFrom(startLine);
-      let status: OpStatus;
-      if (!session.isAlive) status = session.exitCode === 0 ? 'done' : 'failed';
-      else status = 'still_running';
-      const trunc = wrapOutput(output, mb);
+      const result = execResult(session, mb);
       persistState();
-      return {
-        ...trunc,
-        status,
-        isAlive: session.isAlive,
-        exitCode: session.exitCode,
-        startCursor: startLine,
-        cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
-      };
+      return result;
     }
     case 'peekExec': {
       const p = req.params as unknown as PeekExecParams;
       const session = getSession(p.sessionId);
-      const mb = maxBytesOf(p.maxBytes);
-      const startLine = session.lastExecStartLine;
-      const trunc = wrapOutput(session.readFrom(startLine), mb);
-      return {
-        ...trunc,
-        status: session.isAlive ? 'still_running' : (session.exitCode === 0 ? 'done' : 'failed'),
-        isAlive: session.isAlive,
-        exitCode: session.exitCode,
-        startCursor: startLine,
-        cursor: trunc.truncated ? renderedCursor(startLine, trunc.output) : session.lineCount(),
-      };
+      return execResult(session, maxBytesOf(p.maxBytes));
     }
     case 'waitFor': {
       const p = req.params as unknown as WaitForParams;
@@ -387,7 +421,7 @@ async function dispatch(req: Request): Promise<unknown> {
       const session = getSession(p.sessionId);
       assertOwner(session, p, 'kill');
       session.kill();
-      sessions.delete(p.sessionId);
+      sessions.delete(session.id);
       persistState();
       resetIdleTimer();
       return { ok: true };

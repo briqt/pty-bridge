@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.0
+
+- `exec --wait-exit` returns only the command's own output. The echoed input is located even when it wraps over several rows, and it is removed together with the sentinel and the redrawn prompt.
+- Fix: output without a trailing newline (for example `printf abc`) was dropped together with the sentinel line.
+- Fix: a sentinel wrapped by a narrow terminal, or by a long last output line, was not recognised, so `--wait-exit` waited until its timeout and reported `still_running`.
+- Plain `exec` and post-timeout peeks also strip a wrapped echo of the submitted line. They keep the program's prompt.
+- Metadata lines carry only actionable fields: a cursor when there is more to read, byte totals when truncated, `alive=false` when the process exited, `lostBytes` when output was evicted. The duplicate `[Process exited …]` stdout line is gone.
+- Add `start --name`: stable session handles usable wherever an id is. Names are unique among live sessions and cannot look like ids; `list` and lost-session tombstones show them.
+- Owner locks are opt-in. Sessions are unlocked unless started with `--owner` or `PTY_BRIDGE_OWNER`. Locked sessions keep the same guard, and sessions that older CLIs locked to the OS user stay usable without flags.
+- Rewrite the skill around principles. The main file is about a quarter of its former size; troubleshooting and update details move to `skill/references/`.
+- Dependencies: `@lydell/node-pty` 1.2.0-beta.18 (npm latest, all six prebuilt platforms), `@types/node` 26.6.6.
+
 ## v1.6.0
 
 - Add `check-update [--json]` using published stable releases and semantic version ordering.

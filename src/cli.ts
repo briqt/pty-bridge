@@ -6,7 +6,7 @@ import { loadPty } from './session';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CURRENT_VERSION as VERSION, checkForUpdates, updateMessage } from './updater';
-import { defaultOwner, rpcTimeoutForWait } from './protocol';
+import { defaultOwner, lockOwner, rpcTimeoutForWait, sessionNameProblem } from './protocol';
 
 const args = process.argv.slice(2);
 
@@ -66,39 +66,49 @@ function dependencyVersion(name: string): string | null {
 }
 
 function usage(): void {
-  console.log(`pty-bridge — manage interactive terminal sessions
+  console.log(`pty-bridge — persistent interactive terminal sessions
 
 Usage:
-  pty-bridge [--timeout <ms>] [--owner <name>] <command> [options]
+  pty-bridge [--rpc-timeout-ms <ms>] [--owner <name>] <command> [options]
 
   pty-bridge start <command> [args...]                Start a PTY session
-  pty-bridge read <id> [options]                      Read terminal output
-  pty-bridge write <id> <input>                       Send input (or pipe via stdin)
-  pty-bridge exec <id> <command> [options]            Execute command and return new output
-  pty-bridge sendkey <id> <key>                       Send special key (ctrl-c, enter, tab, up, etc.)
-  pty-bridge wait-for <id> <pattern> [--timeout <s>]  Block until pattern appears
-  pty-bridge snapshot <id>                            Capture current visible screen
+  pty-bridge exec <session> <command> [options]       Send a command line and return its output
+  pty-bridge write <session> <input>                  Send input as-is (or pipe via --stdin)
+  pty-bridge sendkey <session> <key>                  Send special key (enter, tab, ctrl-c, up, etc.)
+  pty-bridge read <session> [options]                 Read output (incremental by default)
+  pty-bridge wait-for <session> <pattern> [--timeout <s>]  Block until pattern appears
+  pty-bridge snapshot <session>                       Capture current visible screen
   pty-bridge list                                     List active and lost sessions
-  pty-bridge kill <id>                                Terminate a session
-  pty-bridge resize <id> <cols> <rows>                Resize terminal
+  pty-bridge kill <session>                           Terminate a session
+  pty-bridge resize <session> <cols> <rows>           Resize terminal
   pty-bridge status                                   Show daemon status
   pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
   pty-bridge check-update [--json]                    Check the latest stable release (no daemon)
   pty-bridge --version                                CLI version
 
+<session> is a session id or the name given with start --name.
+Metadata goes to stderr as one [key=value ...] line; fields appear only when they matter.
+
 Global options:
   --rpc-timeout-ms <n>  RPC timeout in ms (before or after subcommand)
-  --owner <name>        Caller identity (also accepted on each mutation)
+  --owner <name>        Caller identity for locked sessions
   --help                Works on subcommands too
   --no-update-check     Disable update checks; place before the subcommand
-  start --json          Return sessionId and owner as JSON
-  list --json --owner <name> --alive-only              Filter sessions
 
 Start options:
+  --name <name>        Stable handle usable instead of the id (unique among live sessions)
+  --owner <name>       Lock the session; others then need --owner <name> or --force
+                       (default: $PTY_BRIDGE_OWNER; unset = unlocked)
   --keepalive <secs>   Send keepalive to PTY every N seconds
   --wait <ms>          Initial wait before returning output (default: 500)
-  --cols <n> --rows <n>
-  --owner <name>       Session owner (default: $PTY_BRIDGE_OWNER or $USER)
+  --cols <n> --rows <n>  Terminal size (default: 120x40)
+  --json               Print sessionId, name and owner as JSON
+
+Exec options:
+  --wait-exit          Shell only: wait for the command to finish; returns done/failed + exitCode
+  --wait <ms>          Wait budget before returning (default: 200; 30000 with --wait-exit)
+  --wait-for-idle <ms> Poll until output stabilizes
+  --max-bytes <n>      Truncate returned output (default 256000; 0 = unlimited)
 
 Read options:
   --full               Entire buffer (does not advance incremental cursor)
@@ -110,21 +120,17 @@ Read options:
   --max-bytes <n>      Truncate (default 256000; 0 = unlimited)
   --buffer <type>      active (default), normal, or alternate
 
-Exec options:
-  --wait <ms>          Wait budget before returning (default: 200; 30000 with --wait-exit)
-  --wait-for-idle <ms> Poll until output stabilizes
-  --wait-exit          Shell only: inject a sentinel and return done/failed + exit code
-  --max-bytes <n>      Truncate returned output
-  --force              Override owner check
-
-Write/sendkey/kill/resize:
-  --owner <name>       Caller identity (default: $PTY_BRIDGE_OWNER or $USER)
-  --force              Allow mutating a session owned by someone else
+Write/exec/sendkey/kill/resize on a locked session:
+  --owner <name>       Caller identity (default: $PTY_BRIDGE_OWNER, else the OS user)
+  --force              Explicit takeover of a session locked by someone else
 
 Wait-for options:
   --timeout <s>        Seconds to wait (default: 30)
   --from <n>           Search from line n (default: last 200 lines + new output)
-  --from-now           Only match output that appears after this call`);
+  --from-now           Only match output that appears after this call
+
+List options:
+  --json --alive-only --owner <name>`);
   const isHelp = args.includes('--help') || args.includes('-h');
   process.exit(isHelp || !command ? 0 : 1);
 }
@@ -185,21 +191,19 @@ interface ExecLikeResult {
   returnedBytes?: number;
 }
 
+/** Only actionable fields: a cursor when there is more to read, totals when truncated, alive only when false. */
 function printExecResult(result: ExecLikeResult): void {
   if (result.output) console.log(result.output);
+  const more = result.truncated || result.status === 'still_running';
   writeMeta({
     status: result.status,
-    cursor: result.cursor,
-    startCursor: result.startCursor,
-    alive: result.isAlive,
-    truncated: result.truncated,
-    totalBytes: result.totalBytes,
-    returnedBytes: result.returnedBytes,
     exitCode: result.exitCode,
+    alive: result.isAlive ? undefined : false,
+    cursor: more ? result.cursor : undefined,
+    truncated: result.truncated || undefined,
+    totalBytes: result.truncated ? result.totalBytes : undefined,
+    returnedBytes: result.truncated ? result.returnedBytes : undefined,
   });
-  if (!result.isAlive) {
-    console.log(`\n[Process exited with code ${result.exitCode ?? 'unknown'}]`);
-  }
 }
 
 async function peekAfterTimeout(sessionId: string): Promise<ExecLikeResult | null> {
@@ -242,23 +246,35 @@ async function main(): Promise<void> {
         cmdArgs = rowsFlag.rest;
         const ownerFlag = parseFlag(cmdArgs, '--owner');
         cmdArgs = ownerFlag.rest;
+        const nameFlag = parseFlag(cmdArgs, '--name');
+        cmdArgs = nameFlag.rest;
+        const name = nameFlag.value;
+        if (name !== undefined) { const problem = sessionNameProblem(name); if (problem) fail(problem); }
         const keepaliveInterval = ka.value ? parseInt(ka.value, 10) : undefined;
         const wait = w.value ? parseInt(w.value, 10) : undefined;
         const cols = colsFlag.value ? parseInt(colsFlag.value, 10) : 120;
         const rows = rowsFlag.value ? parseInt(rowsFlag.value, 10) : 40;
-        const owner = ownerFlag.value || globalOwner || defaultOwner();
+        const owner = ownerFlag.value || globalOwner || lockOwner();
         const result = await request('start', {
           command: cmd,
           args: cmdArgs,
           cols,
           rows,
           cwd: process.cwd(),
-          owner,
+          ...(owner ? { owner } : {}),
+          ...(name ? { name } : {}),
           ...(keepaliveInterval ? { keepaliveInterval } : {}),
           ...(wait !== undefined && !isNaN(wait) ? { wait } : {}),
-        }, globalTimeout) as { sessionId: string; output: string; owner?: string; cursor?: number };
+        }, globalTimeout) as { sessionId: string; output: string; owner?: string; name?: string; cursor?: number };
+        if (name && !result.name) {
+          console.error(`Warning: the running daemon predates session names, so '${name}' was ignored; use the id. Names work once that daemon exits (after its sessions end).`);
+        }
         if (json.present) console.log(JSON.stringify(result));
-        else { console.log(`Session: ${result.sessionId} owner=${result.owner || owner}`); if (result.output) console.log(result.output); }
+        else {
+          const tags = [result.name ? `name=${result.name}` : '', result.owner ? `owner=${result.owner}` : ''].filter(Boolean).join(' ');
+          console.log(`Session: ${result.sessionId}${tags ? ` ${tags}` : ''}`);
+          if (result.output) console.log(result.output);
+        }
         break;
       }
 
@@ -328,17 +344,14 @@ async function main(): Promise<void> {
         };
         if (result.output) { if (raw.present) process.stdout.write(result.output); else console.log(result.output); }
         writeMeta({
-          lines: result.totalLines,
-          alive: result.isAlive,
-          buffer: result.bufferType ?? '?',
           cursor: result.cursor,
-          startCursor: result.startCursor,
-          truncated: result.truncated,
-          totalBytes: result.totalBytes,
-          returnedBytes: result.returnedBytes,
-          raw: result.raw,
-          lostBytes: result.lostBytes,
-          exitCode: result.exitCode,
+          buffer: result.bufferType === 'alternate' ? 'alternate' : undefined,
+          alive: result.isAlive ? undefined : false,
+          exitCode: result.isAlive ? undefined : result.exitCode,
+          truncated: result.truncated || undefined,
+          totalBytes: result.truncated ? result.totalBytes : undefined,
+          returnedBytes: result.truncated ? result.returnedBytes : undefined,
+          lostBytes: result.lostBytes || undefined,
         });
         break;
       }
@@ -422,7 +435,7 @@ async function main(): Promise<void> {
             peek.status = peek.status || 'still_running';
             printExecResult(peek);
           } else {
-            writeMeta({ status: 'still_running', alive: true, error: 'rpc_timeout' });
+            writeMeta({ status: 'still_running', error: 'rpc_timeout' });
             console.error('RPC timed out; command was already sent. Use: pty-bridge read <id> --from-exec');
           }
         }
@@ -472,7 +485,7 @@ async function main(): Promise<void> {
           ...(from !== undefined ? { from } : {}),
         }, socketTimeout) as { matched: boolean; output: string; error?: string; cursor?: number; startCursor?: number };
         if (result.output) console.log(result.output);
-        writeMeta({ matched: result.matched, cursor: result.cursor, startCursor: result.startCursor });
+        writeMeta({ matched: result.matched, cursor: result.cursor });
         if (!result.matched) {
           console.error(result.error || `Timeout waiting for pattern: ${pattern}`);
           process.exit(1);
@@ -496,8 +509,8 @@ async function main(): Promise<void> {
         const alive = parseBoolFlag(json.rest, '--alive-only');
         rejectUnknownFlags(alive.rest, 'list');
         const result = await request('list', {}, globalTimeout) as {
-          sessions: Array<{ id: string; command: string; pid: number; isAlive: boolean; uptime: string; bufferLines: number; bufferType: string; lastActivityAt: string; owner?: string }>;
-          lostSessions?: Array<{ id: string; command: string; pid: number; owner: string; startedAt: string; lostAt: string }>;
+          sessions: Array<{ id: string; command: string; pid: number; isAlive: boolean; uptime: string; bufferLines: number; bufferType: string; lastActivityAt: string; owner?: string; name?: string }>;
+          lostSessions?: Array<{ id: string; command: string; pid: number; owner: string; name?: string; startedAt: string; lostAt: string }>;
           lastRestartAt?: string;
           lostCount?: number;
         };
@@ -513,12 +526,14 @@ async function main(): Promise<void> {
         } else {
           for (const s of result.sessions) {
             const status = s.isAlive ? 'alive' : 'dead';
-            console.log(`${s.id}  ${s.command}  pid=${s.pid}  ${status}  owner=${s.owner || '-'}  buffer=${s.bufferType}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
+            const tags = `${s.name ? `  name=${s.name}` : ''}${s.owner ? `  owner=${s.owner}` : ''}`;
+            console.log(`${s.id}${tags}  ${s.command}  pid=${s.pid}  ${status}  buffer=${s.bufferType}  uptime=${s.uptime}  lines=${s.bufferLines}  lastActivity=${s.lastActivityAt}`);
           }
         }
         if (result.lostSessions) {
           for (const s of result.lostSessions) {
-            console.log(`lost  ${s.id}  ${s.command}  pid=${s.pid}  owner=${s.owner || '-'}  started=${s.startedAt}  lostAt=${s.lostAt}  (reattach not supported; remote nohup may still be running)`);
+            const tags = `${s.name ? `  name=${s.name}` : ''}${s.owner ? `  owner=${s.owner}` : ''}`;
+            console.log(`lost  ${s.id}${tags}  ${s.command}  pid=${s.pid}  started=${s.startedAt}  lostAt=${s.lostAt}  (reattach not supported; remote nohup may still be running)`);
           }
         }
         break;
@@ -556,7 +571,7 @@ async function main(): Promise<void> {
         try { await loadPty(); } catch (err) { nativePty = false; nativeError = String(err); }
         const daemon = await inspectDaemon();
         const dependencyVersions = Object.fromEntries(['@lydell/node-pty', '@xterm/headless'].map(name => [name, dependencyVersion(name)]));
-        const result = { version: VERSION, dependencyVersions, cliPath: __filename, node: process.version, nodePath: process.execPath, socket: getSocketPath(), owner: globalOwner || defaultOwner(), nativePty, nativeError, daemon, capabilities: ['absolute-raw-byte-cursors', 'rendered-column-cursors', 'owner-guard', 'wait-exit'] };
+        const result = { version: VERSION, dependencyVersions, cliPath: __filename, node: process.version, nodePath: process.execPath, socket: getSocketPath(), owner: globalOwner || lockOwner() || null, nativePty, nativeError, daemon, capabilities: ['absolute-raw-byte-cursors', 'rendered-column-cursors', 'owner-guard', 'wait-exit', 'session-names', 'exec-echo-stripping', 'compact-metadata'] };
         console.log(json.present ? JSON.stringify(result) : JSON.stringify(result, null, 2));
         if (!nativePty) process.exitCode = 1;
         break;

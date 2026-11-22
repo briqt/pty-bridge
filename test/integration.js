@@ -146,6 +146,13 @@ if (!id) {
   check('wait-exit status=done', /status=done/.test(m), m);
   check('wait-exit exitCode=0', /exitCode=0/.test(m), m);
   check('wait-exit strips sentinel', !/PTYBRIDGE_DONE_/.test(r.stdout), r.stdout);
+  check('wait-exit returns only command output (no echo, no prompt)', r.stdout === 'hello-wait-exit\n', JSON.stringify(r.stdout));
+  check('done metadata is compact', m === 'status=done exitCode=0', m);
+}
+
+{
+  const r = run(['exec', id, 'printf abc', '--wait-exit', '--wait', '8000']);
+  check('output without trailing newline is kept', r.stdout === 'abc\n' && /status=done/.test(r.stderr), JSON.stringify(r.stdout) + r.stderr);
 }
 
 {
@@ -153,7 +160,7 @@ if (!id) {
   const m = meta(r.stderr);
   check('wait-exit false status=failed', /status=failed/.test(m), m);
   check('wait-exit false exitCode=1', /exitCode=1/.test(m), m);
-  check('wait-exit false session still alive', /alive=true/.test(m), m);
+  check('wait-exit false session still alive (alive only reported when false)', !/alive=/.test(m), m);
 }
 
 // --- exec still_running + cursor
@@ -170,7 +177,7 @@ if (!id) {
   run(['exec', id, 'python3 -c "print(\'L1\\nL2\\nL3\\nL4\\nL5\')"', '--wait-exit', '--wait', '8000']);
   const r = run(['read', id, '--lines', '3']);
   check('read --lines is not ignored', r.status === 0 && r.stdout.trim().length > 0, `status=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${r.stderr}`);
-  check('read --lines metadata has truncated field', /truncated=/.test(r.stderr), r.stderr);
+  check('read metadata has cursor', /cursor=\d+/.test(r.stderr), r.stderr);
 }
 
 {
@@ -197,7 +204,10 @@ if (!id) {
   const wid = sessionId(wide.stdout);
   check('narrow session started', !!wid, wide.stdout);
   if (wid) {
-    run(['exec', wid, 'echo ABCDEFGHIJKLMNOPQRSTUVWXYZ', '--wait-exit', '--wait', '8000']);
+    const t0 = Date.now();
+    const narrow = run(['exec', wid, 'echo ABCDEFGHIJKLMNOPQRSTUVWXYZ', '--wait-exit', '--wait', '8000']);
+    check('narrow terminal: wrapped sentinel completes without waiting for timeout', /status=done/.test(narrow.stderr) && Date.now() - t0 < 6000, `${Date.now() - t0}ms ${narrow.stderr}`);
+    check('narrow terminal: wrapped echo is stripped', narrow.stdout === 'ABCDEFGHIJKL\nMNOPQRSTUVWX\nYZ\n', JSON.stringify(narrow.stdout));
     const wrapped = run(['read', wid, '--full']);
     const raw = run(['read', wid, '--raw', '--full']);
     check('wrapped read splits long echo', /ABCDEFGHIJK/.test(wrapped.stdout), wrapped.stdout);
@@ -217,6 +227,29 @@ if (!id) {
 {
   const r = run(['list']);
   check('list shows owner', /owner=tester/.test(r.stdout), r.stdout);
+}
+
+// --- names and opt-in locking
+{
+  const unlocked = run(['start', 'bash', '--norc', '--noprofile', '--name', 'scratch.1', '--wait', '300'], { PTY_BRIDGE_OWNER: '' });
+  check('start --name without owner prints an unlocked session', /^Session: [0-9a-f]{8} name=scratch\.1\n/.test(unlocked.stdout), unlocked.stdout + unlocked.stderr);
+  const byName = run(['exec', 'scratch.1', 'echo by-name', '--wait-exit', '--wait', '8000'], { PTY_BRIDGE_OWNER: 'anyone' });
+  check('unlocked session accepts any caller by name, no --force', byName.status === 0 && byName.stdout === 'by-name\n', byName.stdout + byName.stderr);
+  const dup = run(['start', 'bash', '--norc', '--noprofile', '--name', 'scratch.1'], { PTY_BRIDGE_OWNER: '' });
+  check('duplicate live session name is rejected', dup.status !== 0 && /already used/.test(dup.stderr), dup.stderr);
+  const idLike = run(['start', 'bash', '--name', 'deadbeef']);
+  check('id-shaped session name is rejected', idLike.status !== 0 && /look like a session id/.test(idLike.stderr), idLike.stderr);
+  const listed = run(['list', '--json']);
+  check('list exposes names', JSON.parse(listed.stdout).sessions.some(s => s.name === 'scratch.1' && !s.owner), listed.stdout);
+  const killed = run(['kill', 'scratch.1'], { PTY_BRIDGE_OWNER: '' });
+  check('kill by name removes the session', killed.status === 0 && !/scratch\.1/.test(run(['list']).stdout), killed.stdout + killed.stderr);
+
+  const legacyUser = process.env.USER || process.env.USERNAME || 'default';
+  const legacy = run(['start', 'bash', '--norc', '--noprofile', '--owner', legacyUser, '--wait', '300'], { PTY_BRIDGE_OWNER: '' });
+  const lid = sessionId(legacy.stdout);
+  const legacyExec = run(['exec', lid, 'echo legacy-ok', '--wait-exit', '--wait', '8000'], { PTY_BRIDGE_OWNER: '' });
+  check('sessions locked to the OS user by older CLIs stay usable without flags', legacyExec.stdout === 'legacy-ok\n', legacyExec.stdout + legacyExec.stderr);
+  run(['kill', lid], { PTY_BRIDGE_OWNER: '' });
 }
 
 // --- RPC timeout is still_running, not a failed exec (do not resend)

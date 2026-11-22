@@ -7,3 +7,6 @@
 # Build artifacts
 node_modules/
 *.tgz
+
+# Local maintainer files
+/AGENTS.md

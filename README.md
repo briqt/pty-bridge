@@ -20,7 +20,7 @@ Requirements: Node.js 18+. macOS, Linux, and Windows.
 
 ## Use as an agent skill
 
-[`skill/SKILL.md`](skill/SKILL.md) documents the CLI for compatible terminal-capable assistants. It calls the `pty-bridge` binary from PATH (the GitHub global install above). It does not vendor a runtime.
+[`skills/pty-bridge/SKILL.md`](skills/pty-bridge/SKILL.md) documents the CLI for compatible terminal-capable assistants. It calls the `pty-bridge` binary from PATH (the GitHub global install above). It does not vendor a runtime.
 
 ```bash
 npx skills add briqt/pty-bridge -g
@@ -44,7 +44,7 @@ pty-bridge kill remote
 pty-bridge kill py
 ```
 
-See [`skill/SKILL.md`](skill/SKILL.md) for agent usage, and `pty-bridge <command> --help` for every option.
+See [`skills/pty-bridge/SKILL.md`](skills/pty-bridge/SKILL.md) for agent usage, and `pty-bridge <command> --help` for every option.
 
 ## Architecture
 
@@ -119,17 +119,18 @@ pty-bridge check-update --json
 pty-bridge --no-update-check start bash
 ```
 
-The checker uses the latest published stable release, not the main branch version.
-Successful `start`, `list`, and `status` commands check at most hourly, with a
-2-second network budget, 5-minute failure retry and 24-hour same-version reminder
-cooldown. Automatic notices use stderr; failures never change the PTY result.
+The checker reads `notice.json` from the repository's main branch (1.8.0+), which is
+updated only after a release has been published and verified; it carries the latest
+stable version and optional announcements. Successful `start`, `list`, and `status`
+commands check at most hourly, with a 2-second network budget, 5-minute failure retry
+and a 24-hour reminder cooldown for each version and each announcement. Automatic notices use stderr; failures never change the PTY result.
 Help, version, doctor and high-frequency I/O remain offline.
 
 Disable with `PTY_BRIDGE_NO_UPDATE_CHECK=1`, the leading `--no-update-check` flag,
 or `{"disable_update_check":true}` in
 `~/.config/agent-skills/pty-bridge/config.json`. Explicit checks respect disabling
 and report errors with exit code 1. Cache files are separate from daemon state.
-See [skill/references/updates.md](skill/references/updates.md) for configuration and
+See [skills/pty-bridge/references/updates.md](skills/pty-bridge/references/updates.md) for configuration and
 CLI/skill/daemon upgrade handling. Upgrade notifications do not install anything.
 
 ## Exec output, names and optional locks (1.7.0+)

@@ -1,6 +1,6 @@
 {
   "name": "pty-bridge",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Manage interactive terminal sessions (SSH, REPLs, databases, TUI apps) via CLI. Designed for AI agents that need PTY support.",
   "keywords": [
     "pty",

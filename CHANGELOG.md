@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.0
+
+- Update checks read `notice.json` from the repository's main branch instead of the GitHub Releases API: no API rate limit, and the same manifest carries optional announcements. The manifest is updated only after a release is published and verified. Announcements are display-only, stripped of control characters, shown on stderr at most once per 24 hours per announcement (a new one at once), and suppressed when the local build is newer than the manifest. `check-update --json` adds `notice` when one applies. The cache moves to schema 2; an older cache is discarded and rebuilt.
+- The skill moves to `skills/pty-bridge/`. Installed skills follow automatically on the next `npx skills add briqt/pty-bridge -g -y` or `npx skills update`.
+- SKILL.md states the skill's own update command.
+
 ## v1.7.1
 
 - `exec --wait-exit` now gets exact output boundaries from the shell instead of inferring them from the rendered echo. The shell prints a begin marker, built at run time so the echo never contains it, right before the command and the exit sentinel right after it. Output no longer depends on prompt width, line-editor redraws or wrapping. This fixes a blank first line whenever the echo exactly filled its row in zsh.

@@ -58,7 +58,7 @@ npm i -g github:briqt/pty-bridge --install-links
 
 ## 作为 Agent Skill 使用
 
-[`skill/SKILL.md`](skill/SKILL.md) 为 Claude Code、Cursor 等 Agent 提供 CLI 用法。它调用 PATH 上的 `pty-bridge` 二进制（即上面的 GitHub 全局安装），不内置运行时。
+[`skills/pty-bridge/SKILL.md`](skills/pty-bridge/SKILL.md) 为 Claude Code、Cursor 等 Agent 提供 CLI 用法。它调用 PATH 上的 `pty-bridge` 二进制（即上面的 GitHub 全局安装），不内置运行时。
 
 ```bash
 npx skills add briqt/pty-bridge -g
@@ -82,7 +82,7 @@ pty-bridge kill remote
 pty-bridge kill py
 ```
 
-Agent 用法见 [`skill/SKILL.md`](skill/SKILL.md)，全部选项见 `pty-bridge <command> --help`。
+Agent 用法见 [`skills/pty-bridge/SKILL.md`](skills/pty-bridge/SKILL.md)，全部选项见 `pty-bridge <command> --help`。
 
 ## 架构
 
@@ -152,9 +152,10 @@ transport chunks split within a character. Windows users should use 1.5.1 or lat
 
 ## 版本检查（1.6.0+）
 
-`pty-bridge check-update --json` 显式查询最新稳定 Release，不启动 daemon。
+`pty-bridge check-update --json` 显式读取仓库主分支上的 `notice.json`（1.8.0+），不启动 daemon。
+`notice.json` 只在 Release 发布并验证后更新，包含最新稳定版本和可选公告。
 成功的 `start`、`list`、`status` 最多每小时自动检查一次，网络预算 2 秒，失败
-5 分钟后重试，同一版本的提醒间隔 24 小时。自动通知仅写 stderr，不改变业务
+5 分钟后重试，同一版本、同一公告的提醒间隔都是 24 小时。自动通知仅写 stderr，不改变业务
 输出和退出码。帮助、版本、doctor 和高频终端 I/O 不自动联网。
 
 可通过子命令前的 `--no-update-check`、`PTY_BRIDGE_NO_UPDATE_CHECK=1`，或
@@ -164,7 +165,7 @@ transport chunks split within a character. Windows users should use 1.5.1 or lat
 
 CLI 和 Skill 分别更新；运行中的 daemon 不会被安装操作重启。升级后运行
 `pty-bridge --version` 和 `pty-bridge doctor --json` 核对，不为升级中断其他
-会话。完整说明见 [skill/references/updates.md](skill/references/updates.md)。
+会话。完整说明见 [skills/pty-bridge/references/updates.md](skills/pty-bridge/references/updates.md)。
 
 ## Exec 输出、会话名与可选锁（1.7.0+）
 

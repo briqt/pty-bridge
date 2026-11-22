@@ -5,7 +5,7 @@ import { getSocketPath } from './protocol';
 import { loadPty } from './session';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CURRENT_VERSION as VERSION, checkForUpdates, updateMessage } from './updater';
+import { CURRENT_VERSION as VERSION, checkForUpdates, noticeMessage, updateMessage } from './updater';
 import { defaultOwner, lockOwner, rpcTimeoutForWait, sessionNameProblem } from './protocol';
 
 const args = process.argv.slice(2);
@@ -83,7 +83,7 @@ Usage:
   pty-bridge resize <session> <cols> <rows>           Resize terminal
   pty-bridge status                                   Show daemon status
   pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
-  pty-bridge check-update [--json]                    Check the latest stable release (no daemon)
+  pty-bridge check-update [--json]                    Check the published release manifest (no daemon)
   pty-bridge --version                                CLI version
 
 <session> is a session id or the name given with start --name.
@@ -226,8 +226,11 @@ async function main(): Promise<void> {
         if (json.rest.length) fail('check-update accepts only --json');
         const result = await checkForUpdates({ explicit: true, disabled: noUpdateCheck });
         if (json.present) console.log(JSON.stringify(result));
-        else if (result.status === 'available') console.log(updateMessage({ version: result.latestVersion!, url: result.releaseUrl! }));
-        else console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+        else {
+          if (result.status === 'available') console.log(updateMessage({ version: result.latestVersion!, url: result.releaseUrl! }));
+          else console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+          if (result.notice) console.log(noticeMessage({ version: result.latestVersion!, url: result.releaseUrl!, notice: result.notice }));
+        }
         if (result.status === 'error' || result.status === 'busy') process.exitCode = 1;
         break;
       }

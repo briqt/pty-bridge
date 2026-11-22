@@ -2,13 +2,13 @@
 name: pty-bridge
 description: Run and drive persistent interactive terminal (PTY) sessions through a local CLI. Use when work needs a terminal that outlives a single tool call — the program requires a real TTY, must receive input while it runs, keeps state that later steps depend on, or has to be read as a rendered screen. Skip it when the regular shell tool can run the command to completion on its own.
 metadata:
-  version: "1.7.1"
+  version: "1.8.0"
 ---
 
 # pty-bridge
 
 A local daemon keeps PTY sessions alive between tool calls; the `pty-bridge` CLI drives them.
-Needs CLI 1.7.0+ (`pty-bridge --version`). Install or upgrade: `npm i -g github:briqt/pty-bridge --install-links` (Node.js 18+).
+Needs CLI 1.7.0+ (`pty-bridge --version`). Install or upgrade: `npm i -g github:briqt/pty-bridge --install-links` (Node.js 18+); update this skill: `npx skills add briqt/pty-bridge -g -y`.
 Versions, update notices and upgrades: [references/updates.md](references/updates.md).
 
 ## Core loop

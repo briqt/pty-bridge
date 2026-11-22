@@ -33,15 +33,17 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_AGE_MS = exports.COOLDOWN_MS = exports.RETRY_MS = exports.CHECK_INTERVAL_MS = exports.RELEASE_API = exports.CURRENT_VERSION = void 0;
+exports.MAX_AGE_MS = exports.COOLDOWN_MS = exports.RETRY_MS = exports.CHECK_INTERVAL_MS = exports.NOTICE_URL = exports.CURRENT_VERSION = void 0;
 exports.updateDirectory = updateDirectory;
 exports.stableVersion = stableVersion;
-exports.parseRelease = parseRelease;
-exports.fetchLatestRelease = fetchLatestRelease;
+exports.parseManifest = parseManifest;
+exports.fetchManifest = fetchManifest;
 exports.parseState = parseState;
 exports.available = available;
 exports.shouldNotify = shouldNotify;
+exports.shouldAnnounce = shouldAnnounce;
 exports.updateMessage = updateMessage;
+exports.noticeMessage = noticeMessage;
 exports.checkForUpdates = checkForUpdates;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
@@ -50,12 +52,14 @@ const crypto_1 = require("crypto");
 const semver = __importStar(require("semver"));
 const proper_lockfile_1 = require("proper-lockfile");
 exports.CURRENT_VERSION = require('../package.json').version;
-exports.RELEASE_API = 'https://api.github.com/repos/briqt/pty-bridge/releases/latest';
+// Single source of the latest version and of announcements; updated only after a release is verified.
+exports.NOTICE_URL = 'https://raw.githubusercontent.com/briqt/pty-bridge/main/notice.json';
 exports.CHECK_INTERVAL_MS = 60 * 60 * 1000;
 exports.RETRY_MS = 5 * 60 * 1000;
 exports.COOLDOWN_MS = 24 * 60 * 60 * 1000;
 exports.MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_BYTES = 64 * 1024;
+const MAX_NOTICE = 1000;
 function updateDirectory() {
     return path.join((0, os_1.homedir)(), '.config', 'agent-skills', 'pty-bridge');
 }
@@ -68,23 +72,42 @@ function stableVersion(value) {
 function releaseUrl(value) {
     return typeof value === 'string' && /^https:\/\/github\.com\/briqt\/pty-bridge\/releases\/tag\/v?[0-9A-Za-z.+-]+$/.test(value);
 }
-function parseRelease(value) {
-    const item = value;
-    const version = stableVersion(item?.tag_name);
-    if (!version || item?.draft !== false || item?.prerelease !== false || !releaseUrl(item?.html_url)) {
-        throw new Error('Invalid stable release metadata');
-    }
-    const urlVersion = stableVersion(item.html_url.split('/').pop());
-    if (urlVersion !== version)
-        throw new Error('Release URL and version disagree');
-    return { version, url: item.html_url };
+function noticeId(value) {
+    return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(value);
 }
-async function fetchLatestRelease() {
+// Announcements are display-only data: strip terminal control characters and bound the length.
+function noticeText(value) {
+    if (typeof value !== 'string')
+        return null;
+    const text = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim();
+    return text && text.length <= MAX_NOTICE ? text : null;
+}
+/** Validate notice.json: { schema_version: 1, latest_version, release_url, notice_id?, notice? }. */
+function parseManifest(value) {
+    const item = value;
+    if (!item || typeof item !== 'object' || item.schema_version !== 1)
+        throw new Error('Unsupported notice manifest');
+    const version = stableVersion(item.latest_version);
+    if (!version || !releaseUrl(item.release_url))
+        throw new Error('Invalid stable release metadata');
+    if (stableVersion(item.release_url.split('/').pop()) !== version)
+        throw new Error('Release URL and version disagree');
+    const release = { version, url: item.release_url };
+    if (item.notice_id !== undefined && item.notice_id !== null && item.notice_id !== '') {
+        const text = noticeText(item.notice);
+        if (!noticeId(item.notice_id) || !text)
+            throw new Error('Invalid notice');
+        release.noticeId = item.notice_id;
+        release.notice = text;
+    }
+    return release;
+}
+async function fetchManifest() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
-        const response = await fetch(exports.RELEASE_API, {
-            headers: { Accept: 'application/vnd.github+json', 'User-Agent': `pty-bridge/${exports.CURRENT_VERSION}` },
+        const response = await fetch(exports.NOTICE_URL, {
+            headers: { Accept: 'application/json', 'User-Agent': `pty-bridge/${exports.CURRENT_VERSION}` },
             signal: controller.signal,
             redirect: 'error',
         });
@@ -113,39 +136,56 @@ async function fetchLatestRelease() {
         finally {
             reader.releaseLock();
         }
-        return parseRelease(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        return parseManifest(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     }
     finally {
         clearTimeout(timer);
     }
 }
 function emptyState() {
-    return { schema: 1, lastSuccess: 0, nextCheck: 0, notifiedAt: 0 };
+    return { schema: 2, lastSuccess: 0, nextCheck: 0, notifiedAt: 0, notifiedNoticeAt: 0 };
 }
 function parseState(value, now) {
     const s = value;
-    if (!s || s.schema !== 1 || ![s.lastSuccess, s.nextCheck, s.notifiedAt].every(v => Number.isSafeInteger(v) && v >= 0))
+    // The cache is disposable: anything unexpected (including older schemas) starts over.
+    if (!s || s.schema !== 2 || ![s.lastSuccess, s.nextCheck, s.notifiedAt, s.notifiedNoticeAt].every(v => Number.isSafeInteger(v) && v >= 0))
         return emptyState();
     if (s.release && (!stableVersion(s.release.version) || !releaseUrl(s.release.url)))
         return emptyState();
+    if (s.release?.noticeId !== undefined && (!noticeId(s.release.noticeId) || noticeText(s.release.notice) !== s.release.notice))
+        return emptyState();
     if (s.notifiedVersion !== undefined && !stableVersion(s.notifiedVersion))
         return emptyState();
-    if (s.lastSuccess > now || s.notifiedAt > now || s.nextCheck > now + exports.CHECK_INTERVAL_MS)
+    if (s.notifiedNoticeId !== undefined && !noticeId(s.notifiedNoticeId))
+        return emptyState();
+    if (s.lastSuccess > now || s.notifiedAt > now || s.notifiedNoticeAt > now || s.nextCheck > now + exports.CHECK_INTERVAL_MS)
         return emptyState();
     return s;
 }
 function available(release, current = exports.CURRENT_VERSION) {
     return !!release && !!semver.valid(current) && semver.gt(release.version, current);
 }
+function fresh(state, now) {
+    return !!state.release && now >= state.lastSuccess && now - state.lastSuccess <= exports.MAX_AGE_MS;
+}
 function shouldNotify(state, now, current = exports.CURRENT_VERSION) {
-    return now >= state.lastSuccess && now - state.lastSuccess <= exports.MAX_AGE_MS && available(state.release, current)
+    return fresh(state, now) && available(state.release, current)
         && (state.notifiedVersion !== state.release.version || now - state.notifiedAt >= exports.COOLDOWN_MS);
+}
+/** Announcements are independent of the version tip; a local build newer than the manifest ignores them. */
+function shouldAnnounce(state, now, current = exports.CURRENT_VERSION) {
+    const release = state.release;
+    return fresh(state, now) && !!release?.noticeId && !!semver.valid(current) && !semver.gt(current, release.version)
+        && (state.notifiedNoticeId !== release.noticeId || now - state.notifiedNoticeAt >= exports.COOLDOWN_MS);
 }
 function updateMessage(release) {
     return `[update] pty-bridge ${release.version} available (current ${exports.CURRENT_VERSION}): ${release.url}\n`
         + 'Update CLI: npm i -g github:briqt/pty-bridge --install-links\n'
         + 'Check and update the companion skill: npx skills add briqt/pty-bridge -g -y\n'
         + 'Use pty-bridge doctor --json to inspect the running daemon; upgrading does not restart active sessions.';
+}
+function noticeMessage(release) {
+    return `[notice] pty-bridge: ${release.notice}`;
 }
 async function readConfig(directory) {
     let raw;
@@ -198,7 +238,7 @@ async function checkForUpdates(options = {}) {
         let errorMessage;
         if (options.explicit || now >= state.nextCheck) {
             try {
-                state.release = await (options.fetchRelease || fetchLatestRelease)();
+                state.release = await (options.fetchManifest || fetchManifest)();
                 state.lastSuccess = now;
                 state.nextCheck = now + exports.CHECK_INTERVAL_MS;
             }
@@ -209,11 +249,17 @@ async function checkForUpdates(options = {}) {
         }
         if (compromised)
             return result('busy');
-        const fresh = state.release && now >= state.lastSuccess && now - state.lastSuccess <= exports.MAX_AGE_MS;
+        const isFresh = fresh(state, now);
+        const emit = options.emit || console.error;
         if (!options.explicit && shouldNotify(state, now)) {
-            (options.emit || console.error)(updateMessage(state.release));
+            emit(updateMessage(state.release));
             state.notifiedVersion = state.release.version;
             state.notifiedAt = now;
+        }
+        if (!options.explicit && shouldAnnounce(state, now)) {
+            emit(noticeMessage(state.release));
+            state.notifiedNoticeId = state.release.noticeId;
+            state.notifiedNoticeAt = now;
         }
         temp = `${file}.${process.pid}.${(0, crypto_1.randomUUID)()}.tmp`;
         await fs.writeFile(temp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
@@ -223,10 +269,11 @@ async function checkForUpdates(options = {}) {
         temp = undefined;
         if (errorMessage)
             return result('error', { error: errorMessage });
-        if (!fresh)
+        if (!isFresh)
             return result('error', { error: 'No fresh release information cached' });
+        const announced = state.release.notice && !semver.gt(exports.CURRENT_VERSION, state.release.version) ? { notice: state.release.notice } : {};
         return result(available(state.release) ? 'available' : 'up-to-date', {
-            latestVersion: state.release.version, releaseUrl: state.release.url, checkedAt: state.lastSuccess,
+            latestVersion: state.release.version, releaseUrl: state.release.url, checkedAt: state.lastSuccess, ...announced,
         });
     }
     catch (error) {

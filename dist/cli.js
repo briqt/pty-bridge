@@ -129,7 +129,7 @@ Usage:
   pty-bridge resize <session> <cols> <rows>           Resize terminal
   pty-bridge status                                   Show daemon status
   pty-bridge doctor [--json]                          Inspect versions/paths without starting a daemon
-  pty-bridge check-update [--json]                    Check the latest stable release (no daemon)
+  pty-bridge check-update [--json]                    Check the published release manifest (no daemon)
   pty-bridge --version                                CLI version
 
 <session> is a session id or the name given with start --name.
@@ -261,10 +261,14 @@ async function main() {
                 const result = await (0, updater_1.checkForUpdates)({ explicit: true, disabled: noUpdateCheck });
                 if (json.present)
                     console.log(JSON.stringify(result));
-                else if (result.status === 'available')
-                    console.log((0, updater_1.updateMessage)({ version: result.latestVersion, url: result.releaseUrl }));
-                else
-                    console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+                else {
+                    if (result.status === 'available')
+                        console.log((0, updater_1.updateMessage)({ version: result.latestVersion, url: result.releaseUrl }));
+                    else
+                        console.log(`Update check: ${result.status}${result.error ? ` (${result.error})` : ''}`);
+                    if (result.notice)
+                        console.log((0, updater_1.noticeMessage)({ version: result.latestVersion, url: result.releaseUrl, notice: result.notice }));
+                }
                 if (result.status === 'error' || result.status === 'busy')
                     process.exitCode = 1;
                 break;

@@ -16,15 +16,83 @@ export interface ExecExtract {
   exitCode?: number;
 }
 
+/**
+ * How to find the boundaries of one exec in the rendered rows.
+ * - `begin`/`marker`: lines the shell prints at run time just before and just after
+ *   the command (wait-exit). They make both boundaries exact.
+ * - `tail`/`rows`: the end of the echoed input, searched within `rows` rows. A
+ *   best-effort fallback for programs that cannot print markers.
+ */
+export interface ExecBounds {
+  begin?: string;
+  marker?: string;
+  tail?: string;
+  rows?: number;
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * Locate the end of the shell's echo of submitted input. Rows are searched as one
- * whitespace-free string, so soft wraps, forced line-editor wraps and trimmed
- * trailing spaces do not hide the echo. Returns the index of the first row after
- * the echo, or -1 when the echo is not visible within `maxRows`.
+ * Shell input for `exec --wait-exit`.
+ *
+ * The begin marker is assembled by printf at run time, so the echoed input never
+ * contains it and output starts exactly on the row after it, however the line
+ * editor drew the echo. The command runs inside `{ …\n}` so a trailing comment,
+ * `;`, `&` or here-document cannot swallow or break the end sentinel, and `$?`
+ * is the command's own exit status.
+ */
+export function waitExitInput(command: string, token: string): { input: string; bounds: ExecBounds } {
+  const marker = `PTYBRIDGE_DONE_${token}:`;
+  return {
+    input: `printf '%s_%s\\n' PTYBRIDGE_BEGIN ${token}; { ${command}\r}; echo ${marker}$?\r`,
+    bounds: { begin: `PTYBRIDGE_BEGIN_${token}`, marker, tail: `${marker}$?` },
+  };
+}
+
+/** Rows joined into logical lines: soft-wrapped rows are concatenated, hard breaks become '\n'. */
+function joinLogical(rows: RenderedRow[], fromRow: number): { text: string; rowAt: number[]; colAt: number[] } {
+  let text = '';
+  const rowAt: number[] = [];
+  const colAt: number[] = [];
+  const start = Math.max(0, fromRow);
+  for (let r = start; r < rows.length; r++) {
+    if (r > start && !rows[r].wrapped) { text += '\n'; rowAt.push(r); colAt.push(-1); }
+    const t = rows[r].text;
+    for (let i = 0; i < t.length; i++) { rowAt.push(r); colAt.push(i); }
+    text += t;
+  }
+  return { text, rowAt, colAt };
+}
+
+/** Index of the first row after the printed begin marker, or -1 if it has not been printed. */
+export function findBegin(rows: RenderedRow[], begin: string): number {
+  const { text, rowAt } = joinLogical(rows, 0);
+  const index = text.indexOf(begin);
+  return index < 0 ? -1 : rowAt[index + begin.length - 1] + 1;
+}
+
+/**
+ * Find the printed sentinel `${marker}<exit code>` at or after `fromRow`. Soft-wrapped
+ * rows are joined first, so a sentinel split by the terminal width still matches.
+ */
+export function findSentinel(rows: RenderedRow[], fromRow: number, marker: string): SentinelMatch | null {
+  const { text, rowAt, colAt } = joinLogical(rows, fromRow);
+  const match = new RegExp(`${escapeRegExp(marker)}(\\d+)`).exec(text);
+  if (!match) return null;
+  return {
+    row: rowAt[match.index],
+    col: colAt[match.index],
+    exitCode: parseInt(match[1], 10),
+    atEnd: match.index + match[0].length >= text.length,
+  };
+}
+
+/**
+ * Locate the end of the echoed input. Rows are searched as one whitespace-free
+ * string, so soft wraps, line-editor wraps and trimmed trailing spaces do not hide
+ * the echo. Returns the index of the first row after the echo, or -1.
  */
 export function locateEchoEnd(rows: RenderedRow[], tail: string, maxRows = rows.length): number {
   const needle = tail.replace(/\s+/g, '');
@@ -40,58 +108,33 @@ export function locateEchoEnd(rows: RenderedRow[], tail: string, maxRows = rows.
     }
   }
   const index = text.indexOf(needle);
-  return index < 0 ? -1 : rowAt[index + needle.length - 1] + 1;
+  if (index < 0) return -1;
+  const end = rowAt[index + needle.length - 1] + 1;
+  let body = end;
+  // Output starts on a fresh row after Enter, never on a soft-wrap continuation.
+  while (body < rows.length && rows[body].wrapped) body++;
+  // An echo that exactly fills its row can leave one erased forced-wrap row (zsh).
+  if (body === end && rows[end - 1]?.full && body < rows.length - 1 && rows[body].text === '') body++;
+  return body;
 }
 
 /**
- * Find the printed sentinel `${marker}<exit code>` at or after `fromRow`. Soft-wrapped
- * rows are joined first, so a sentinel split by the terminal width still matches.
+ * Return only what a command printed. With a begin marker the output starts on the
+ * row after it; otherwise after the located echo, else at `defaultBodyRow`. With a
+ * sentinel, output stops before it; text printed in front of the sentinel on its row
+ * (output without a trailing newline) is kept, and the prompt redrawn after it is not.
  */
-export function findSentinel(rows: RenderedRow[], fromRow: number, marker: string): SentinelMatch | null {
-  let text = '';
-  const rowAt: number[] = [];
-  const colAt: number[] = [];
-  const start = Math.max(0, fromRow);
-  for (let r = start; r < rows.length; r++) {
-    if (r > start && !rows[r].wrapped) { text += '\n'; rowAt.push(r); colAt.push(-1); }
-    const t = rows[r].text;
-    for (let i = 0; i < t.length; i++) { rowAt.push(r); colAt.push(i); }
-    text += t;
-  }
-  const match = new RegExp(`${escapeRegExp(marker)}(\\d+)`).exec(text);
-  if (!match) return null;
-  return {
-    row: rowAt[match.index],
-    col: colAt[match.index],
-    exitCode: parseInt(match[1], 10),
-    atEnd: match.index + match[0].length >= text.length,
-  };
-}
-
-/**
- * Return only what a command printed: drop the echoed input (which may span
- * several wrapped rows) and, when a sentinel is present, the sentinel itself and
- * the prompt redrawn after it. Text printed before the sentinel on its own row
- * (output without a trailing newline) is kept.
- *
- * `defaultBodyRow` is used when the echo cannot be located.
- */
-export function extractExecOutput(
-  rows: RenderedRow[],
-  defaultBodyRow: number,
-  echo: { tail: string; rows?: number; marker?: string } | undefined,
-): ExecExtract {
-  let bodyRow = Math.min(Math.max(0, defaultBodyRow), rows.length);
-  if (echo?.tail) {
-    const end = locateEchoEnd(rows, echo.tail, echo.rows ?? rows.length);
-    if (end >= 0) bodyRow = end;
-  }
+export function extractExecOutput(rows: RenderedRow[], defaultBodyRow: number, bounds: ExecBounds | undefined): ExecExtract {
+  let bodyRow = -1;
+  if (bounds?.begin) bodyRow = findBegin(rows, bounds.begin);
+  if (bodyRow < 0 && bounds?.tail) bodyRow = locateEchoEnd(rows, bounds.tail, bounds.rows ?? rows.length);
+  if (bodyRow < 0) bodyRow = Math.min(Math.max(0, defaultBodyRow), rows.length);
   let stop = rows.length;
   let partial = '';
   let matched = false;
   let exitCode: number | undefined;
-  if (echo?.marker) {
-    const found = findSentinel(rows, bodyRow, echo.marker);
+  if (bounds?.marker) {
+    const found = findSentinel(rows, bodyRow, bounds.marker);
     if (found) {
       matched = true;
       exitCode = found.exitCode;

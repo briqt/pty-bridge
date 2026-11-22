@@ -176,7 +176,8 @@ pty-bridge exec build "make test" --wait-exit     # stdout：只有 make 的输�
 
 - `exec --wait-exit` 只返回命令本身的输出：命令回显（包括折成多行的长命令）、sentinel
   和随后重绘的提示符都会去掉；末尾不带换行的输出会保留。窄终端里被折行的 sentinel
-  能立即识别，不再空等到超时。
+  能立即识别，不再空等到超时。1.7.1 起输出的首尾边界都由 shell 自己打印，命令包在
+  `{ …\n}` 中执行：行尾注释、结尾的 `;`/`&`、heredoc 都能原样使用。
 - 元数据只输出有用的字段：还有内容可读时给 cursor，截断时给字节数，进程退出时给
   `alive=false`，输出被淘汰时给 `lostBytes`。
 - `start --name <name>` 给会话一个稳定的名字，凡是能写 id 的地方都能写名字。名字在

@@ -216,6 +216,50 @@ if (!id) {
   }
 }
 
+// --- an echo that exactly fills the row (line editors force the wrap with a space)
+{
+  const shells = [['bash', '--norc', '--noprofile']];
+  if (spawnSync('sh', ['-c', 'command -v zsh']).status === 0) shells.push(['zsh', '-f']);
+  for (const shell of shells) {
+    const started = run(['start', ...shell, '--cols', '60', '--wait', '500']);
+    const sid = sessionId(started.stdout);
+    run(['exec', sid, "PS1='P> '", '--wait-exit', '--wait', '8000']);
+    // 3 (prompt) + 24 (command) + 33 ("; echo PTYBRIDGE_DONE_xxxxxxxx:$?") = 60 columns
+    const payload = 'w'.repeat(19);
+    const r = run(['exec', sid, `echo ${payload}`, '--wait-exit', '--wait', '8000']);
+    check(`${shell[0]}: exact-width echo leaves no blank first line`, r.stdout === `${payload}\n`, JSON.stringify(r.stdout) + r.stderr);
+    if (sid) run(['kill', sid]);
+  }
+}
+
+// --- wait-exit is robust to command syntax and to how the shell drew the echo
+{
+  const shells = [['bash', '--norc', '--noprofile']];
+  if (spawnSync('sh', ['-c', 'command -v zsh']).status === 0) shells.push(['zsh', '-f']);
+  const cases = [
+    ['trailing semicolon', 'echo semi;', 'semi\n', 'done'],
+    ['background job', 'sleep 0 &', null, 'done'],
+    ['here-document', "cat <<'EOF'\nline1\nline2\nEOF", 'line1\nline2\n', 'done'],
+    ['exit status of the command', '(exit 3)', '', 'failed', 3],
+    ['shell still usable afterwards', 'echo still-ok', 'still-ok\n', 'done'],
+  ];
+  for (const shell of shells) {
+    const sid = sessionId(run(['start', ...shell, '--wait', '0']).stdout);
+    const first = run(['exec', sid, 'echo right-after-start', '--wait-exit', '--wait', '8000']);
+    check(`${shell[0]}: exec right after start`, first.stdout === 'right-after-start\n', JSON.stringify(first.stdout) + first.stderr);
+    if (shell[0] === 'bash') {
+      const c = run(['exec', sid, 'echo hi # trailing comment', '--wait-exit', '--wait', '8000']);
+      check('bash: trailing comment does not swallow the sentinel', c.stdout === 'hi\n' && /status=done/.test(c.stderr), JSON.stringify(c.stdout) + c.stderr);
+    }
+    for (const [label, cmd, expected, status, code = status === 'done' ? 0 : 1] of cases) {
+      const r = run(['exec', sid, cmd, '--wait-exit', '--wait', '8000']);
+      const ok = r.stderr.includes(`status=${status} exitCode=${code}`) && (expected === null || r.stdout === expected);
+      check(`${shell[0]}: ${label}`, ok, JSON.stringify(r.stdout) + r.stderr);
+    }
+    run(['kill', sid]);
+  }
+}
+
 // --- owner guard
 {
   const other = run(['exec', id, 'echo pwned', '--wait', '200'], { PTY_BRIDGE_OWNER: 'intruder' });

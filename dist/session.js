@@ -72,7 +72,7 @@ class Session {
     owner;
     name;
     lastExecStartLine = 0;
-    lastExecEcho;
+    lastExecBounds;
     lastExecStartRaw = 0;
     _lastActivityAt;
     pty;
@@ -148,10 +148,10 @@ class Session {
         this.pty.resize(cols, rows);
         this.terminal.resize(cols, rows);
     }
-    markExecStart(echo) {
+    markExecStart(bounds) {
         this.lastExecStartLine = this.lineCount();
         this.lastExecStartRaw = this.rawOutput.end;
-        this.lastExecEcho = echo;
+        this.lastExecBounds = bounds;
     }
     getBuffer(which) {
         if (!which || which === 'active')
@@ -250,7 +250,10 @@ class Session {
         const rows = [];
         for (let i = Math.max(0, startLine); i <= last; i++) {
             const line = buf.getLine(i);
-            rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped });
+            const edge = line?.getCell(this.cols - 1);
+            // A width-0 cell is the second half of a wide character, which also fills the row.
+            const full = !!edge && (edge.getChars() !== '' || edge.getWidth() === 0);
+            rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped, full });
         }
         return rows;
     }

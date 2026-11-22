@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { StringDecoder } from 'string_decoder';
 import { Session, loadPty } from './session';
 import { renderedCursor } from './output';
-import { extractExecOutput, findSentinel, echoSearchRows } from './exec-output';
+import { extractExecOutput, findSentinel, echoSearchRows, waitExitInput } from './exec-output';
 const VERSION: string = require('../package.json').version;
 import {
   getSocketPath,
@@ -220,18 +220,18 @@ function execResult(session: Session, maxBytes: number) {
   const startLine = session.lastExecStartLine;
   // The command is typed on the prompt row, one row above the exec start line.
   const base = Math.max(0, startLine - 1);
-  const echo = session.lastExecEcho;
-  const extracted = extractExecOutput(session.readRows(base), startLine - base, echo);
+  const bounds = session.lastExecBounds;
+  const extracted = extractExecOutput(session.readRows(base), startLine - base, bounds);
   const trunc = wrapOutput(extracted.output, maxBytes);
   let status: OpStatus;
   let exitCode = session.exitCode;
-  if (echo?.marker && extracted.matched) {
+  if (bounds?.marker && extracted.matched) {
     exitCode = extracted.exitCode;
     status = exitCode === 0 ? 'done' : 'failed';
   } else if (session.isAlive) {
     status = 'still_running';
   } else {
-    status = !echo?.marker && session.exitCode === 0 ? 'done' : 'failed';
+    status = !bounds?.marker && session.exitCode === 0 ? 'done' : 'failed';
   }
   const bodyLine = base + extracted.bodyRow;
   return {
@@ -338,11 +338,10 @@ async function dispatch(req: Request): Promise<unknown> {
       assertOwner(session, p, 'exec');
       const mb = maxBytesOf(p.maxBytes);
       if (p.waitExit) {
-        const token = crypto.randomBytes(4).toString('hex');
-        const marker = `PTYBRIDGE_DONE_${token}:`;
-        session.markExecStart({ tail: `${marker}$?`, marker });
-        session.write(`${p.command}; echo ${marker}$?\r`);
-        await waitForSentinel(session, marker, p.waitMs || 30000);
+        const { input, bounds } = waitExitInput(p.command, crypto.randomBytes(4).toString('hex'));
+        session.markExecStart(bounds);
+        session.write(input);
+        await waitForSentinel(session, bounds.marker!, p.waitMs || 30000);
         const result = execResult(session, mb);
         persistState();
         return result;

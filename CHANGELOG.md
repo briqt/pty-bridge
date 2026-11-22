@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.1
+
+- `exec --wait-exit` now gets exact output boundaries from the shell instead of inferring them from the rendered echo. The shell prints a begin marker, built at run time so the echo never contains it, right before the command and the exit sentinel right after it. Output no longer depends on prompt width, line-editor redraws or wrapping. This fixes a blank first line whenever the echo exactly filled its row in zsh.
+- Fix: the command now runs inside `{ …\n}`, so a trailing comment no longer swallows the sentinel (which used to wait until the timeout), a trailing `;` or `&` is no longer a syntax error, and a here-document no longer leaves the shell stuck at a continuation prompt for every later command.
+- Plain `exec` (no sentinel, e.g. in a REPL) still strips the echo on a best-effort basis; it now also drops the empty row that an exactly filled echo row can leave.
+
 ## v1.7.0
 
 - `exec --wait-exit` returns only the command's own output. The echoed input is located even when it wraps over several rows, and it is removed together with the sentinel and the redrawn prompt.

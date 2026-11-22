@@ -2,7 +2,7 @@
 name: pty-bridge
 description: Run and drive persistent interactive terminal (PTY) sessions through a local CLI. Use when work needs a terminal that outlives a single tool call — the program requires a real TTY, must receive input while it runs, keeps state that later steps depend on, or has to be read as a rendered screen. Skip it when the regular shell tool can run the command to completion on its own.
 metadata:
-  version: "1.7.0"
+  version: "1.7.1"
 ---
 
 # pty-bridge
@@ -20,7 +20,7 @@ pty-bridge kill build
 ```
 
 - `<session>` is the id or the `--name` given at start. Pick a descriptive, unique name: it is easier to keep across long tasks than an id.
-- **Shell sessions:** use `exec --wait-exit`. It returns only the command's output, then `[status=done|failed exitCode=N]`. It appends `; echo <sentinel>` to the command, so use it only in POSIX-style shells.
+- **Shell sessions:** use `exec --wait-exit`. It returns exactly the command's output, then `[status=done|failed exitCode=N]`. It wraps the command in shell code that prints boundary markers, so use it only in POSIX-style shells.
 - **Other programs** (REPLs, clients, editors): `exec` without `--wait-exit` returns the output so far, ending with the program's prompt; or use `write` + `sendkey enter`.
 - **Prompts that need answers:** check them with `read` / `snapshot`, then `write` the answer and `sendkey enter`. Pipe secrets in with `write <session> --stdin` from a credential source. Never put them in arguments.
 - **Full-screen programs:** `snapshot` shows the visible screen; `sendkey` sends keys (`enter tab escape up down left right pageup pagedown ctrl-a…ctrl-z`).

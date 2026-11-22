@@ -3,6 +3,7 @@ import type { IPty } from '@lydell/node-pty';
 import type { IBuffer } from '@xterm/headless';
 import { RAW_BUFFER_CAP, DEFAULT_MAX_BYTES, truncateUtf8 } from './protocol';
 import { RawOutputBuffer, renderedCursor } from './output';
+import type { ExecBounds } from './exec-output';
 
 let ptyModule: typeof import('@lydell/node-pty');
 
@@ -47,18 +48,16 @@ export interface SessionInfo {
   lastExecStartLine: number;
 }
 
-/** One rendered terminal row; `wrapped` means it soft-wraps from the previous row. */
+/**
+ * One rendered terminal row. `wrapped`: it soft-wraps from the previous row.
+ * `full`: its last cell is occupied, i.e. text reached the right margin.
+ */
 export interface RenderedRow {
   text: string;
   wrapped: boolean;
+  full?: boolean;
 }
 
-/** How the daemon recognises the shell's echo (and sentinel) of the last exec. */
-export interface ExecEcho {
-  tail: string;
-  rows?: number;
-  marker?: string;
-}
 
 export interface SnapshotData {
   lines: string[];
@@ -76,7 +75,7 @@ export class Session {
   readonly owner: string;
   readonly name: string;
   lastExecStartLine = 0;
-  lastExecEcho: ExecEcho | undefined;
+  lastExecBounds: ExecBounds | undefined;
   lastExecStartRaw = 0;
   private _lastActivityAt: string;
   private pty: IPty;
@@ -169,10 +168,10 @@ export class Session {
     this.terminal.resize(cols, rows);
   }
 
-  markExecStart(echo?: ExecEcho): void {
+  markExecStart(bounds?: ExecBounds): void {
     this.lastExecStartLine = this.lineCount();
     this.lastExecStartRaw = this.rawOutput.end;
-    this.lastExecEcho = echo;
+    this.lastExecBounds = bounds;
   }
 
   private getBuffer(which?: 'active' | 'normal' | 'alternate'): IBuffer {
@@ -272,7 +271,10 @@ export class Session {
     const rows: RenderedRow[] = [];
     for (let i = Math.max(0, startLine); i <= last; i++) {
       const line = buf.getLine(i);
-      rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped });
+      const edge = line?.getCell(this.cols - 1);
+      // A width-0 cell is the second half of a wide character, which also fills the row.
+      const full = !!edge && (edge.getChars() !== '' || edge.getWidth() === 0);
+      rows.push({ text: line ? line.translateToString(true) : '', wrapped: !!line?.isWrapped, full });
     }
     return rows;
   }

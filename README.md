@@ -144,6 +144,8 @@ pty-bridge exec build "make test" --wait-exit     # stdout: only make's output
   when it wraps over several rows), the sentinel and the redrawn prompt are removed,
   and output without a trailing newline is kept. A sentinel wrapped by a narrow
   terminal is recognised immediately instead of waiting for the timeout.
+  Since 1.7.1 both boundaries are printed by the shell itself, and the command runs
+  inside `{ …\n}`: trailing comments, `;`, `&` and here-documents work unchanged.
 - Metadata lists only actionable fields: a cursor when there is more to read, byte
   totals when truncated, `alive=false` when the process exited, `lostBytes` when
   output was evicted.

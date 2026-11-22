@@ -228,12 +228,12 @@ function execResult(session, maxBytes) {
     const startLine = session.lastExecStartLine;
     // The command is typed on the prompt row, one row above the exec start line.
     const base = Math.max(0, startLine - 1);
-    const echo = session.lastExecEcho;
-    const extracted = (0, exec_output_1.extractExecOutput)(session.readRows(base), startLine - base, echo);
+    const bounds = session.lastExecBounds;
+    const extracted = (0, exec_output_1.extractExecOutput)(session.readRows(base), startLine - base, bounds);
     const trunc = wrapOutput(extracted.output, maxBytes);
     let status;
     let exitCode = session.exitCode;
-    if (echo?.marker && extracted.matched) {
+    if (bounds?.marker && extracted.matched) {
         exitCode = extracted.exitCode;
         status = exitCode === 0 ? 'done' : 'failed';
     }
@@ -241,7 +241,7 @@ function execResult(session, maxBytes) {
         status = 'still_running';
     }
     else {
-        status = !echo?.marker && session.exitCode === 0 ? 'done' : 'failed';
+        status = !bounds?.marker && session.exitCode === 0 ? 'done' : 'failed';
     }
     const bodyLine = base + extracted.bodyRow;
     return {
@@ -341,11 +341,10 @@ async function dispatch(req) {
             assertOwner(session, p, 'exec');
             const mb = maxBytesOf(p.maxBytes);
             if (p.waitExit) {
-                const token = crypto.randomBytes(4).toString('hex');
-                const marker = `PTYBRIDGE_DONE_${token}:`;
-                session.markExecStart({ tail: `${marker}$?`, marker });
-                session.write(`${p.command}; echo ${marker}$?\r`);
-                await waitForSentinel(session, marker, p.waitMs || 30000);
+                const { input, bounds } = (0, exec_output_1.waitExitInput)(p.command, crypto.randomBytes(4).toString('hex'));
+                session.markExecStart(bounds);
+                session.write(input);
+                await waitForSentinel(session, bounds.marker, p.waitMs || 30000);
                 const result = execResult(session, mb);
                 persistState();
                 return result;

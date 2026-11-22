@@ -1,10 +1,41 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractExecOutput, findSentinel, locateEchoEnd, echoSearchRows } = require('../dist/exec-output');
+const { extractExecOutput, findSentinel, findBegin, locateEchoEnd, echoSearchRows, waitExitInput } = require('../dist/exec-output');
 
 const M = 'PTYBRIDGE_DONE_ab12cd34:';
+const B = 'PTYBRIDGE_BEGIN_ab12cd34';
 const row = (text, wrapped = false) => ({ text, wrapped });
+
+test('wait-exit input: runtime-built begin marker, grouped command, end sentinel', () => {
+  const { input, bounds } = waitExitInput('ls # note;', 'ab12cd34');
+  assert.equal(input, "printf '%s_%s\\n' PTYBRIDGE_BEGIN ab12cd34; { ls # note;\r}; echo PTYBRIDGE_DONE_ab12cd34:$?\r");
+  assert.ok(!input.includes(B), 'the echoed input must never contain the printed begin marker');
+  assert.deepEqual(bounds, { begin: B, marker: M, tail: `${M}$?` });
+});
+
+test('with a begin marker, output boundaries do not depend on how the echo was drawn', () => {
+  const echo = [
+    row("% printf '%s_%s\\n' PTYBRIDGE_BEGIN ab12cd34; { ls /nope"),
+    row(''),                                   // erased forced-wrap row (zsh)
+    row(`cursh> }; echo ${M}$?`),              // continuation prompt
+  ];
+  const rows = [...echo, row(B), row(''), row('real blank line above'), row(`${M}0`), row('%')];
+  const out = extractExecOutput(rows, 1, { begin: B, marker: M, tail: `${M}$?` });
+  assert.deepEqual([out.output, out.exitCode], ['\nreal blank line above', 0]);
+});
+
+test('the begin marker is found when a narrow terminal wraps it, never inside the echo', () => {
+  assert.equal(findBegin([row('PTYBRIDGE_BEG'), row('IN_ab12cd34', true), row('out')], B), 2);
+  // the echo has a space (or, once wrapped and trimmed, nothing) where the output has "_"
+  assert.equal(findBegin([row("printf '%s_%s\\n' PTYBRIDGE_BEGIN ab12cd34; { x")], B), -1);
+  assert.equal(findBegin([row('PTYBRIDGE_BEGIN'), row('ab12cd34', true)], B), -1);
+});
+
+test('before the command starts, a wait-exit returns nothing from the echo', () => {
+  const rows = [row(`$ printf '%s_%s\\n' PTYBRIDGE_BEGIN ab12cd34; { sleep 9`), row(`> }; echo ${M}$?`)];
+  assert.equal(extractExecOutput(rows, 1, { begin: B, marker: M, tail: `${M}$?` }).output, '');
+});
 
 test('a command echo wrapped over several rows is removed with the sentinel and next prompt', () => {
   const rows = [
@@ -25,6 +56,24 @@ test('the echo is found even when a line editor breaks rows without soft-wrap fl
   const out = extractExecOutput(rows, 1, { tail: `${M}$?`, marker: M });
   assert.equal(out.output, 'file');
   assert.equal(out.exitCode, 2);
+});
+
+test('an echo that exactly fills its row does not leave a blank first line', () => {
+  const full = (text) => ({ text, wrapped: false, full: true });
+  // zsh: the forced-wrap row is erased from column 0, which clears its wrap flag
+  const zsh = [full(`% ls /nope; echo ${M}$?`), row(''), row('ls: /nope'), row(`${M}1`), row('%')];
+  assert.equal(extractExecOutput(zsh, 1, { tail: `${M}$?`, marker: M }).output, 'ls: /nope');
+  // other editors may keep the wrap flag on the empty continuation
+  const flagged = [full(`% ls /nope; echo ${M}$?`), row('', true), row('ls: /nope'), row(`${M}1`), row('%')];
+  assert.equal(extractExecOutput(flagged, 1, { tail: `${M}$?`, marker: M }).output, 'ls: /nope');
+  // bash moves back up instead: nothing to skip, so a real first line stays
+  const bash = [full(`$ ls /nope; echo ${M}$?`), row('ls: /nope'), row(`${M}1`), row('$')];
+  assert.equal(extractExecOutput(bash, 1, { tail: `${M}$?`, marker: M }).output, 'ls: /nope');
+});
+
+test('a blank first output line after an echo that does not fill its row is kept', () => {
+  const rows = [row(`$ echo; echo x; echo ${M}$?`), row(''), row('x'), row(`${M}0`), row('$')];
+  assert.equal(extractExecOutput(rows, 1, { tail: `${M}$?`, marker: M }).output, '\nx');
 });
 
 test('output without a trailing newline is kept in front of the sentinel', () => {

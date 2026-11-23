@@ -3,6 +3,4 @@
 
 node_modules/
 *.tgz
-
-# 个人 Agent 指令不入库
 /AGENTS.md

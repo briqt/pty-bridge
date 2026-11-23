@@ -1,12 +1,9 @@
-# Ignore all dotfiles/dotdirs
+# 默认忽略所有 . 开头的文件和目录，需要跟踪的逐个放行
 .*
-
-# Whitelist
 !.gitignore
 
-# Build artifacts
+# 个人 Agent 指令不入库
+/AGENTS.md
+
 node_modules/
 *.tgz
-
-# Local maintainer files
-/AGENTS.md

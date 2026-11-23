@@ -1,9 +1,8 @@
-# 默认忽略所有 . 开头的文件和目录，需要跟踪的逐个放行
 .*
 !.gitignore
 
-# 个人 Agent 指令不入库
-/AGENTS.md
-
 node_modules/
 *.tgz
+
+# 个人 Agent 指令不入库
+/AGENTS.md

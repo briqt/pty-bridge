@@ -106,15 +106,6 @@ npm test
 
 编辑 `src/*.ts`，运行 `npm run build`，本地测试（`node dist/cli.js status`）。请提交 `dist/`——从 GitHub 安装用的是编译后的 JS，没有单独的发布步骤。
 
-## License
-
-MIT
-
-## 社区
-
-分享于 [LINUX DO](https://linux.do/)
-
-
 ## 1.5.0 diagnostics and reliable continuation
 
 ```bash
@@ -186,3 +177,11 @@ pty-bridge exec build "make test" --wait-exit     # stdout：只有 make 的输�
 - 会话默认不加锁；只有用 `--owner` 或 `PTY_BRIDGE_OWNER` 启动时才加锁，加锁的会话
   每次修改操作仍需带 owner（或 `--force`）。旧版 CLI 默认锁给系统用户的会话，无需额外
   参数即可继续使用。
+
+## 社区
+
+[学 AI，上 Linux DO](https://linux.do/)
+
+## License
+
+MIT

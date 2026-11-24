@@ -68,15 +68,6 @@ npm test
 
 Edit `src/*.ts`, run `npm run build`, and test locally (`node dist/cli.js status`). Commit `dist/` — GitHub installs use the compiled JS, not a publish step.
 
-## License
-
-MIT
-
-## Community
-
-Shared on [LINUX DO](https://linux.do/)
-
-
 ## 1.5.0 diagnostics and reliable continuation
 
 ```bash
@@ -155,3 +146,11 @@ pty-bridge exec build "make test" --wait-exit     # stdout: only make's output
 - Sessions are unlocked unless started with `--owner` or `PTY_BRIDGE_OWNER`. Locked
   sessions still require the owner (or `--force`) for every mutation. Sessions that
   older CLIs locked to the OS user by default stay usable without flags.
+
+## Community
+
+[学 AI，上 Linux DO](https://linux.do/)
+
+## License
+
+MIT
